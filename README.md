@@ -31,6 +31,8 @@
   updates, and deprecated engines.
 - **Self-hosted** — Next.js + PostgreSQL 16 run side by side in Docker
   Compose; no external services.
+- **One-liner onboarding** — add any host by pasting a single
+  `curl ... | bash` command from the dashboard's **+ Add Host** button.
 
 ---
 
@@ -51,7 +53,7 @@ nano .env
 #   AGENT_API_TOKEN        → openssl rand -hex 32
 #   SLACK_WEBHOOK_URL      → optional, for Slack downtime alerts
 #   SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO  → optional, for email alerts
-#   FLEETWATCH_PUBLIC_URL  → https://fleet.example.com
+#   PUBLIC_FLEETWATCH_URL  → https://fleet.example.com   (used in the Add Host command)
 
 # 3. Build + start (app on port 3000 + Postgres 16)
 docker compose up -d --build
@@ -126,6 +128,10 @@ no secrets) so a host can bootstrap itself with no manual file transfer.
 | `/api/hosts/[id]`           | GET    | —            | Host detail: packages, Docker, 30-day uptime, downtime log |
 | `/api/jobs/check-downtime`  | POST   | Bearer token | Runs the heartbeat-miss scan on demand (external cron) |
 | `/api/health`               | GET    | —            | Container liveness probe |
+| `/install.sh`               | GET    | public       | Bootstrapping installer fetched by `curl` |
+| `/agent.sh`                 | GET    | public       | Agent collector script, downloaded by the installer |
+| `/digi-fleet-watch.service` | GET    | public       | Systemd unit, downloaded by the installer |
+| `/digi-fleet-watch.timer`   | GET    | public       | Systemd timer, downloaded by the installer |
 
 ### Status thresholds
 
@@ -189,10 +195,10 @@ cron that runs the scan even when nobody is looking:
 ├── drizzle/
 │   └── 0000_initial.sql    # Postgres schema (auto-applied on first boot)
 ├── src/
-│   ├── app/                # Next.js App Router: pages + /api routes
-│   ├── components/         # dashboard UI
+│   ├── app/                # Next.js App Router: pages, /api and script routes (/install.sh…)
+│   ├── components/         # dashboard UI (incl. Add Host dialog)
 │   ├── db/schema.ts        # Drizzle schema
-│   └── lib/                # db client, downtime logic, Slack, ingest
+│   └── lib/                # db client, downtime logic, alerts, install-command helpers
 ├── docker-compose.yml      # app + Postgres 16
 ├── Dockerfile              # multi-stage production image
 └── .env.example            # copy to .env (never commit .env!)
