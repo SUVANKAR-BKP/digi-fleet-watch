@@ -32,7 +32,8 @@ cp .env.example .env
 nano .env
 #   POSTGRES_PASSWORD      → pick a strong password
 #   AGENT_API_TOKEN        → openssl rand -hex 32
-#   SLACK_WEBHOOK_URL      → optional, for downtime alerts
+#   SLACK_WEBHOOK_URL      → optional, for Slack downtime alerts
+#   SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO  → optional, for email alerts
 #   FLEETWATCH_PUBLIC_URL  → https://fleet.example.com
 
 # 3. Build + start (app on port 3000 + Postgres 16)
@@ -97,6 +98,11 @@ The agent needs **no root** for normal operation and reports every 5 minutes.
 - A downtime event is recorded (and a **Slack** webhook is sent) after a host
   has been silent for 15 minutes; it closes automatically when the agent
   reports again.
+- **Email alerts** (via SMTP) are sent for:
+  - host going **down** and coming back **up**,
+  - **new package updates** on a host (security updates flagged `[SECURITY]`),
+    only once per change to avoid noise,
+  - a host first reporting a **deprecated Docker engine**.
 - The scan runs on each dashboard load, so no worker is required. For a
   separate cron, POST to `/api/jobs/check-downtime` with the bearer token.
 

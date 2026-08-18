@@ -5,7 +5,8 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // The pg driver (node-postgres) should stay as a runtime dependency,
   // not be bundled, to avoid issues with its optional native bindings.
-  serverExternalPackages: ["pg"],
+  // pg + nodemailer should stay as runtime dependencies, not be bundled.
+    serverExternalPackages: ["pg", "nodemailer"],
   webpack: (config) => {
     if (process.env.NODE_ENV === "development") {
       config.module.rules.push({

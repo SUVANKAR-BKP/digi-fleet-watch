@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, isNull, lt, or } from "drizzle-orm";
 import { downtimeEvents, hosts } from "@/db/schema";
 import { getDb } from "./db";
+import { sendAlertEmail } from "./mail";
 import { postSlackMessage } from "./slack";
 import { DOWN_MS, OPEN_DOWNTIME_AFTER_MS, STALE_MS } from "./thresholds";
 import type { DowntimeEventRow, HostStatus, UptimeDay } from "./types";
@@ -44,30 +45,54 @@ export async function runDowntimeCheck(): Promise<{ opened: number; closed: numb
           detectedBy: "heartbeat_miss",
         });
         opened++;
-        await postSlackMessage(
-          `:red_circle: *Digi Fleet Watch* — host \`${row.hostname}\` is DOWN\n` +
-            `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
-        );
-      }
-    } else if (openEvent) {
-      await db
-        .update(downtimeEvents)
-        .set({ endedAt: now })
-        .where(and(eq(downtimeEvents.hostId, row.id), isNull(downtimeEvents.endedAt)));
-      closed++;
-    }
+                await postSlackMessage(
+                  `:red_circle: *Digi Fleet Watch* — host \`${row.hostname}\` is DOWN\n` +
+                    `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
+                );
+                await sendAlertEmail({
+                  subject: `HOST DOWN: ${row.hostname}`,
+                  text:
+                    `Digi Fleet Watch detected that host \`${row.hostname}\` is DOWN.\n\n` +
+                    `No heartbeat since ${row.lastSeenAt.toISOString()}.\n\n` +
+                    `Check the dashboard: ${getBaseUrl()}/hosts/${row.id}`,
+                });
+              }
+            } else if (openEvent) {
+              await db
+                .update(downtimeEvents)
+                .set({ endedAt: now })
+                .where(and(eq(downtimeEvents.hostId, row.id), isNull(downtimeEvents.endedAt)));
+              closed++;
+              await sendAlertEmail({
+                subject: `Host recovered: ${row.hostname}`,
+                text:
+                  `Good news — host \`${row.hostname}\` is reporting again.\n\n` +
+                  `Last heartbeat: ${now.toISOString()}\n\n` +
+                  `Dashboard: ${getBaseUrl()}/hosts/${row.id}`,
+              });
+            }
   }
 
   return { opened, closed };
 }
 
-/** Closes any open downtime event for a host (called on ingest / recovery). */
-export async function closeOpenDowntime(hostId: number, endedAt: Date = new Date()) {
+/** Closes any open downtime event for a host (called on ingest / recovery).
+ * Returns the number of events closed. */
+export async function closeOpenDowntime(
+  hostId: number,
+  endedAt: Date = new Date(),
+): Promise<number> {
   const db = getDb();
-  await db
+  const rows = await db
     .update(downtimeEvents)
     .set({ endedAt })
-    .where(and(eq(downtimeEvents.hostId, hostId), isNull(downtimeEvents.endedAt)));
+    .where(and(eq(downtimeEvents.hostId, hostId), isNull(downtimeEvents.endedAt)))
+    .returning({ id: downtimeEvents.id });
+  return rows.length;
+}
+
+function getBaseUrl(): string {
+  return process.env.FLEETWATCH_PUBLIC_URL?.replace(/\/$/, "") || "http://localhost:3000";
 }
 
 /** Uptime percentage over the last `days`. */

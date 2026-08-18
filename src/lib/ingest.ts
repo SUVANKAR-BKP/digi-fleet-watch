@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   dockerInfo as dockerInfoTable,
@@ -9,7 +9,8 @@ import {
 } from "@/db/schema";
 import { getDb } from "./db";
 import { closeOpenDowntime } from "./downtime";
-import type { AgentPayload } from "./types";
+import { sendAlertEmail } from "./mail";
+import type { AgentPackagePayload, AgentPayload } from "./types";
 
 const ingestSchema = z.object({
   hostname: z.string().min(1).max(255),
@@ -66,6 +67,40 @@ export async function processIngest(
     .returning({ id: hosts.id });
   const hostId = host.id;
 
+  // Work out what's *new* since the last snapshot so we alert once per
+  // update instead of on every 5-minute heartbeat.
+  const newUpdates: AgentPackagePayload[] = [];
+  let dockerDeprecatedNew = false;
+
+  const [prevSnap] = await db
+    .select()
+    .from(snapshots)
+    .where(eq(snapshots.hostId, hostId))
+    .orderBy(desc(snapshots.collectedAt))
+    .limit(1);
+
+  if (prevSnap) {
+    const prevPkgs = await db
+      .select()
+      .from(packagesTable)
+      .where(eq(packagesTable.snapshotId, prevSnap.id));
+    const prevAvail = new Map<string, string>();
+    for (const r of prevPkgs) if (r.availableVersion) prevAvail.set(r.name, r.availableVersion);
+
+    for (const p of payload.packages ?? []) {
+      if (!p.available) continue;
+      const was = prevAvail.get(p.name);
+      if (was === undefined || was !== p.available) newUpdates.push(p);
+    }
+
+    const [prevDk] = await db
+      .select()
+      .from(dockerInfoTable)
+      .where(eq(dockerInfoTable.snapshotId, prevSnap.id))
+      .limit(1);
+    if (payload.docker?.deprecated && !prevDk?.isDeprecated) dockerDeprecatedNew = true;
+  }
+
   const collectedAt = payload.collected_at ? new Date(payload.collected_at) : now;
 
   const [snapshot] = await db
@@ -104,9 +139,55 @@ export async function processIngest(
   }
 
   await db.insert(heartbeats).values({ hostId, receivedAt: now });
-
-  // Recovery: any open downtime event is closed now that we heard from the host.
-  await closeOpenDowntime(hostId, now);
-
-  return { hostId, snapshotId };
-}
+  
+    // Recovery: close any open downtime event now that the host reported again.
+    const closed = await closeOpenDowntime(hostId, now);
+    if (closed > 0) {
+      await sendAlertEmail({
+        subject: `Host recovered: ${payload.hostname}`,
+        text:
+          `Good news — host \`${payload.hostname}\` is reporting again.\n\n` +
+          `Last heartbeat: ${now.toISOString()}`,
+      });
+    }
+  
+    // Alert once when new package updates appear (security ones stand out).
+    if (newUpdates.length > 0) {
+      const securityCount = newUpdates.filter((p) => p.security).length;
+      await sendAlertEmail({
+        subject: `${newUpdates.length} new package update${newUpdates.length === 1 ? "" : "s"} on ${payload.hostname}`,
+        text: formatUpdateEmail(payload.hostname, newUpdates, securityCount),
+      });
+    }
+  
+    // Alert when a host first reports a deprecated Docker engine.
+    if (dockerDeprecatedNew && payload.docker) {
+      await sendAlertEmail({
+        subject: `Docker engine deprecated on ${payload.hostname}`,
+        text:
+          `Host \`${payload.hostname}\` is running Docker ` +
+          `${payload.docker.engine_version ?? "unknown"}, which has reached end of life.\n\n` +
+          `Plan an upgrade to a supported engine version.`,
+      });
+    }
+  
+    return { hostId, snapshotId };
+  }
+  
+  function formatUpdateEmail(
+    hostname: string,
+    updates: AgentPackagePayload[],
+    securityCount: number,
+  ): string {
+    const lines = updates
+      .map((u) => {
+        const sec = u.security ? "  [SECURITY]" : "";
+        return `- ${u.name}: ${u.installed} -> ${u.available}${sec}`;
+      })
+      .join("\n");
+    return (
+      `Host \`${hostname}\` has ${updates.length} newly available package update${updates.length === 1 ? "" : "s"}` +
+      `${securityCount > 0 ? ` (${securityCount} security)` : ""}:\n\n${lines}\n\n` +
+      `Review at the Digi Fleet Watch dashboard.`
+    );
+  }
