@@ -20,17 +20,26 @@ Run it as root on each monitored Debian/Ubuntu host. `install.sh`:
 1. bootstraps `curl` + `jq` if they are missing,
 2. downloads `agent.sh` to `/opt/digi-fleet-watch/`,
 3. writes `/etc/digi-fleet-watch/agent.env` (mode 600) with the URL + token,
-4. installs `digi-fleet-watch.service` + `digi-fleet-watch.timer`,
-5. enables the timer — it fires every 5 minutes,
+4. detects the init system — **systemd** (installs `digi-fleet-watch.service` +
+   `digi-fleet-watch.timer`) or, when systemd is absent, **cron** (writes
+   `/etc/cron.d/digi-fleet-watch` for user `fleetwatch`),
+5. enables the schedule — it fires every 5 minutes,
 6. adds the user to the `docker` group if Docker is present.
 
-Verify:
+Verify (systemd hosts):
 
 ```bash
 systemctl list-timers digi-fleet-watch.timer
 sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh
 tail -f /var/log/digi-fleet-watch.log
 ```
+
+Verify (cron hosts) — the entry is `/etc/cron.d/digi-fleet-watch`; run the
+agent manually with `sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh`.
+
+**No systemd and no cron?** (bare minimal containers) the installer fails with
+a pointer to the **containerized agent** — see the README "Containerized agent"
+section. It monitors Docker through a mounted socket and needs no init system.
 
 ## Manual install
 

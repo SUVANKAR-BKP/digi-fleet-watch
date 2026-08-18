@@ -1,6 +1,7 @@
 import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  containers as containersTable,
   dockerInfo as dockerInfoTable,
   heartbeats,
   hosts,
@@ -35,16 +36,33 @@ const ingestSchema = z.object({
     )
     .optional(),
   docker: z
-    .object({
-      engine_version: z.string().optional(),
-      api_version: z.string().optional(),
-      deprecated: z.boolean().optional(),
-      containers_running: z.number().int().min(0).optional(),
-      containers_total: z.number().int().min(0).optional(),
-    })
-    .nullable()
-    .optional(),
-});
+      .object({
+        engine_version: z.string().optional(),
+        api_version: z.string().optional(),
+        deprecated: z.boolean().optional(),
+        containers_running: z.number().int().min(0).optional(),
+        containers_total: z.number().int().min(0).optional(),
+      })
+      .nullable()
+      .optional(),
+    containers: z
+      .array(
+        z.object({
+          container_id: z.string().min(1),
+          name: z.string().min(1),
+          image: z.string().min(1),
+          image_tag: z.string().nullable().optional(),
+          image_digest: z.string().nullable().optional(),
+          status: z.string(),
+          health_status: z.string().nullable().optional(),
+          restart_count: z.number().int().min(0).optional(),
+          created_at: z.string().datetime().nullable().optional(),
+          age_days: z.number().min(0).optional(),
+          is_unpinned_latest: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+  });
 
 export function parseAgentPayload(raw: unknown): AgentPayload {
   return ingestSchema.parse(raw);
@@ -128,17 +146,36 @@ export async function processIngest(
   }
 
   if (payload.docker) {
-    await db.insert(dockerInfoTable).values({
-      snapshotId,
-      engineVersion: payload.docker.engine_version ?? "unknown",
-      isDeprecated: payload.docker.deprecated ?? false,
-      apiVersion: payload.docker.api_version ?? null,
-      containersRunning: payload.docker.containers_running ?? 0,
-      containersTotal: payload.docker.containers_total ?? 0,
-    });
-  }
-
-  await db.insert(heartbeats).values({ hostId, receivedAt: now });
+      await db.insert(dockerInfoTable).values({
+        snapshotId,
+        engineVersion: payload.docker.engine_version ?? "unknown",
+        isDeprecated: payload.docker.deprecated ?? false,
+        apiVersion: payload.docker.api_version ?? null,
+        containersRunning: payload.docker.containers_running ?? 0,
+        containersTotal: payload.docker.containers_total ?? 0,
+      });
+    }
+  
+    if (payload.containers && payload.containers.length > 0) {
+      await db.insert(containersTable).values(
+        payload.containers.map((c) => ({
+          snapshotId,
+          containerId: c.container_id,
+          name: c.name,
+          image: c.image,
+          imageTag: c.image_tag ?? null,
+          imageDigest: c.image_digest ?? null,
+          status: c.status,
+          healthStatus: c.health_status ?? null,
+          restartCount: c.restart_count ?? 0,
+          createdAt: c.created_at ? new Date(c.created_at) : null,
+          ageDays: c.age_days ?? null,
+          isUnpinnedLatest: c.is_unpinned_latest ?? false,
+        })),
+      );
+    }
+  
+    await db.insert(heartbeats).values({ hostId, receivedAt: now });
   
     // Recovery: close any open downtime event now that the host reported again.
     const closed = await closeOpenDowntime(hostId, now);

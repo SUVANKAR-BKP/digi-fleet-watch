@@ -11,6 +11,21 @@ export interface AgentPackagePayload {
   cve_ids?: string[];
 }
 
+/** One container row posted by agent.sh from `docker inspect`. */
+export interface AgentContainerPayload {
+  container_id: string;
+  name: string;
+  image: string;
+  image_tag?: string | null;
+  image_digest?: string | null;
+  status: string;
+  health_status?: string | null;
+  restart_count?: number;
+  created_at?: string | null;
+  age_days?: number;
+  is_unpinned_latest?: boolean;
+}
+
 export interface AgentPayload {
   hostname: string;
   label?: string;
@@ -28,6 +43,7 @@ export interface AgentPayload {
     containers_running?: number;
     containers_total?: number;
   } | null;
+  containers?: AgentContainerPayload[];
 }
 
 /** One card on the overview grid. */
@@ -70,6 +86,21 @@ export interface DockerStatus {
   containersTotal: number;
 }
 
+export interface ContainerRow {
+  id: number;
+  containerId: string;
+  name: string;
+  image: string;
+  imageTag: string | null;
+  imageDigest: string | null;
+  status: string;
+  healthStatus: string | null;
+  restartCount: number;
+  createdAt: string | null;
+  ageDays: number | null;
+  isUnpinnedLatest: boolean;
+}
+
 export interface DowntimeEventRow {
   id: number;
   startedAt: string;
@@ -88,6 +119,7 @@ export interface HostDetailData {
   summary: HostSummary;
   os: { name?: string; version?: string; kernel?: string } | null;
   packages: PackageRow[];
+  containers: ContainerRow[];
   docker: DockerStatus;
   uptimeSeries: UptimeDay[];
   uptimePct30d: number;

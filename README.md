@@ -25,6 +25,9 @@
   updates flagged and listed CVEs.
 - **Docker health** — engine version, API version, container counts, and
   end-of-life deprecation badges.
+- **Per-container detail** — for every container (running or not): image/tag/
+  digest, status, health check, restart count, and age, with an "unpinned
+  (:latest)" flag for images that aren't pinned to a reproducible tag.
 - **Uptime & downtime** — 30-day uptime chart and a host's full downtime
   history.
 - **Alerting** — Slack webhooks and/or SMTP emails for downtime, new package
@@ -67,6 +70,9 @@ curl http://localhost:3000/api/health   # {"ok":true}
 - The dashboard is at `http://localhost:3000`.
 - The schema is applied automatically on the **first** Postgres boot
   (`drizzle/*.sql` is mounted into `/docker-entrypoint-initdb.d`).
+- Upgrading an existing install with a non-empty database volume? Apply the
+  new containers migration once:
+  `docker compose exec -T db psql -U fleetwatch -d fleetwatch < drizzle/0001_containers.sql`
 - Put a reverse proxy (Caddy / nginx / Traefik) or Cloudflare Tunnel in front
   and terminate TLS.
 - Stop everything: `docker compose down` · wipe all data:
@@ -136,6 +142,67 @@ toggle; **Copy** always copies the full, working command.
 The server also exposes the agent artifacts directly at `/install.sh`,
 `/agent.sh`, `/digi-fleet-watch.service` and `/digi-fleet-watch.timer` (public,
 no secrets) so a host can bootstrap itself with no manual file transfer.
+
+### Scheduling & host requirements
+
+`install.sh` detects the init system before choosing how to run the agent every
+5 minutes:
+
+- **systemd** (preferred) — installs `digi-fleet-watch.service` +
+  `digi-fleet-watch.timer` and enables the timer.
+- **cron** (no systemd) — writes `/etc/cron.d/digi-fleet-watch` for the
+  `fleetwatch` user.
+- **neither** (bare minimal container) — prints an error and points to the
+  [containerized agent](#containerized-agent-container-only-hosts) instead.
+
+### Known limitations
+
+Detecting whether a container's image is genuinely **out of date** (its tag is
+older than what's currently published in the registry) requires querying the
+remote registry per image. This pass does **not** implement that. Instead the
+agent reports two practical proxies for drift risk:
+
+- `is_unpinned_latest` — the image uses `:latest` or has no tag, so it isn't
+  pinned to a reproducible version;
+- `age_days` — how long the container has been running.
+
+Registry-diff detection (`docker manifest inspect` / registry API) is a noted
+possible future enhancement — we deliberately don't fake registry data.
+
+## Containerized agent (container-only hosts)
+
+For hosts that run only containers and have **no init system** (no systemd and
+no cron) — or when you prefer to monitor via Docker — run the agent as a
+container instead of installing it on the host.
+
+Build it from the repo root, then run it on the Docker host you want to watch:
+
+```bash
+docker build -f agent/Dockerfile.agent -t digi-fleet-watch-agent:latest .
+
+docker run -d --name fleetwatch-agent \
+  -e FLEETWATCH_URL=http://135.125.236.47:3000 \
+  -e AGENT_API_TOKEN=<token> \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  --restart unless-stopped \
+  digi-fleet-watch-agent:latest
+```
+
+The container mounts the host's Docker socket **read-only** and loops
+`agent.sh` every 5 minutes (no systemd/cron needed inside).
+
+**What this mode can and can't see:**
+
+- **Can see** sibling containers on the same Docker host (via the socket) —
+  per-container status/health/restart count/age, plus the engine summary.
+- **Cannot see** host-level **apt/dpkg package data** — that needs real
+  filesystem access, which isn't available from inside a container without
+  additional, riskier host mounts.
+
+So this mode is for **container-focused monitoring only**. Package/OS
+monitoring still requires the bare-metal/VM install path above. `AGENT_API_TOKEN`
+and `FLEETWATCH_URL` come from the same `.env` the dashboard uses; package
+snapshots are simply absent for containerized hosts.
 
 ---
 
@@ -207,10 +274,11 @@ cron that runs the scan even when nobody is looking:
 ## Project layout
 
 ```
-├── agent/                  # host-side agent (Bash + systemd)
+├── agent/                  # host-side agent (Bash + systemd/cron)
 │   ├── agent.sh            # collector script (curl + jq only)
 │   ├── digi-fleet-watch.service / .timer
-│   ├── install.sh          # root installer for a monitored host
+│   ├── install.sh          # root installer (systemd/cron, with error path)
+│   ├── Dockerfile.agent    # standalone containerized agent (loop entrypoint)
 │   └── INSTALL.md          # agent docs + privilege model
 ├── drizzle/
 │   └── 0000_initial.sql    # Postgres schema (auto-applied on first boot)

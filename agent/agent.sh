@@ -8,7 +8,7 @@
 # Requirements: curl + jq only. Runs fine as an unprivileged user.
 #   * `apt list` needs fresh apt lists; a nightly `apt update` (or the agent
 #     running as root once) keeps them current.
-#   * `docker info`/`docker version` need docker access — either put the
+#   * `docker info`/`docker inspect` need docker access — either put the
 #     service user in the `docker` group, or grant a narrow sudo rule.
 #   * `debsecan` is optional: if installed it marks security-relevant updates;
 #     otherwise the agent degrades gracefully.
@@ -106,8 +106,9 @@ run_docker() {
   if [ "$(id -u)" = "0" ]; then
     "$docker_cmd" "$@"; return $?
   fi
-  if "$docker_cmd" "$@" >/dev/null 2>&1; then return 0; fi
-  # Fall back to passwordless sudo for hosts without docker-group access.
+  # Run directly first (docker group), keeping stdout; quietly fall back to
+  # passwordless sudo for hosts without docker-group access.
+  if "$docker_cmd" "$@" 2>/dev/null; then return 0; fi
   if command -v sudo >/dev/null 2>&1; then
     sudo -n "$docker_cmd" "$@" 2>/dev/null
   fi
@@ -146,6 +147,67 @@ if [ -n "$docker_cmd" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Docker containers (optional): per-container detail
+#
+# For every container (running or not) we emit one object with name, image,
+# tag, digest, state, health, restart count, age, and an is_unpinned_latest
+# flag.
+#
+# NOTE on drift detection: is_unpinned_latest + age_days are *practical
+# proxies* for image drift risk — a `:latest` or untagged image is not pinned
+# to a reproducible tag. They do NOT say whether the tag currently on the host
+# is stale versus the registry; that would require a per-image remote query
+# (`docker manifest inspect` / registry API) and is deliberately out of scope
+# for this pass (see README "Known limitations").
+# ---------------------------------------------------------------------------
+containers_json='[]'
+if [ -n "$docker_cmd" ]; then
+  ps_json="$(run_docker ps -a --format '{{json .}}' 2>/dev/null)"
+  if [ -n "$ps_json" ]; then
+    ctmp="$(mktemp)"
+    trap 'rm -f "$tmp" "$sec_tmp" "$ctmp"' EXIT
+    : >"$ctmp"
+    while IFS= read -r cid; do
+      [ -n "$cid" ] || continue
+      insp="$(run_docker inspect "$cid" 2>/dev/null)"
+      [ -n "$insp" ] || continue
+      cjson="$(printf '%s' "$insp" | jq -c '.[0] | {
+        container_id: .Id,
+        name: (.Name | ltrimstr("/")),
+        image: .Config.Image,
+        image_tag: (.Config.Image | split("/")[-1] | (if contains(":") then split(":")[-1] else "latest" end)),
+        image_digest: ((.RepoDigests[0] // "") | (if contains("@") then split("@")[-1] else "" end)),
+        status: (.State.Status // ""),
+        health_status: (.State.Health.Status // ""),
+        restart_count: (.RestartCount // 0),
+        created_at: (.Created // "")
+      }' 2>/dev/null || true)"
+      [ -n "$cjson" ] || continue
+
+      # Age in whole + fractional days since the container was created.
+      age_days="0"
+      created="$(printf '%s' "$cjson" | jq -r '.created_at' 2>/dev/null || true)"
+      if [ -n "$created" ]; then
+        created_epoch="$(date -d "$created" +%s 2>/dev/null || true)"
+        if [ -n "$created_epoch" ]; then
+          now_epoch="$(date +%s 2>/dev/null || echo 0)"
+          age_days="$(awk -v c="$created_epoch" -v n="$now_epoch" 'BEGIN { printf "%.1f", (n - c) / 86400 }')"
+        fi
+      fi
+
+      row="$(printf '%s' "$cjson" | jq -c \
+        --arg age "$age_days" \
+        '. + {age_days: ($age | tonumber), is_unpinned_latest: (.image_tag == "latest")}' 2>/dev/null || true)"
+      [ -n "$row" ] && printf '%s\n' "$row" >>"$ctmp"
+    done <<<"$(printf '%s' "$ps_json" | jq -r 'select(.ID != null) | .ID' 2>/dev/null)"
+
+    if [ -s "$ctmp" ]; then
+      containers_json="$(jq -s '.' "$ctmp" 2>/dev/null || echo '[]')"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Assemble and POST the payload
 # ---------------------------------------------------------------------------
 payload="$(jq -n \
@@ -156,10 +218,11 @@ payload="$(jq -n \
   --arg kernel "$kernel" \
   --argjson packages "$packages_json" \
   --argjson docker "$docker_json" \
+  --argjson containers "$containers_json" \
   --arg collected "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{hostname:$hostname, label:$label,
     os:{name:$os_name, version:$os_version, kernel:$kernel},
-    packages:$packages, docker:$docker, collected_at:$collected}')"
+    packages:$packages, docker:$docker, containers:$containers, collected_at:$collected}')"
 
 printf '%s' "$payload" | jq -e . >/dev/null 2>&1 || die "failed to build valid JSON payload"
 

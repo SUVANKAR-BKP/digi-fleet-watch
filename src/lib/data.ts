@@ -1,5 +1,6 @@
 import { and, asc, count, desc, eq, isNotNull, sql } from "drizzle-orm";
 import {
+  containers as containersTable,
   dockerInfo as dockerInfoTable,
   hosts as hostsTable,
   packages as packagesTable,
@@ -15,6 +16,7 @@ import {
 } from "./downtime";
 import { getDemoHostDetail, getDemoOverview } from "./demo";
 import type {
+  ContainerRow,
   DockerStatus,
   HostDetailData,
   HostSummary,
@@ -88,6 +90,7 @@ export async function getHostDetail(id: number): Promise<HostDetailData | null> 
       .limit(1);
 
     let packages: PackageRow[] = [];
+    let containers: ContainerRow[] = [];
     const docker: DockerStatus = {
       installed: false,
       engineVersion: null,
@@ -110,6 +113,25 @@ export async function getHostDetail(id: number): Promise<HostDetailData | null> 
         available: r.availableVersion,
         security: r.isSecurityUpdate,
         cveIds: r.cveIds,
+      }));
+
+      const crows = await db
+        .select()
+        .from(containersTable)
+        .where(eq(containersTable.snapshotId, snap.id));
+      containers = crows.map((c) => ({
+        id: c.id,
+        containerId: c.containerId,
+        name: c.name,
+        image: c.image,
+        imageTag: c.imageTag,
+        imageDigest: c.imageDigest,
+        status: c.status,
+        healthStatus: c.healthStatus,
+        restartCount: c.restartCount,
+        createdAt: c.createdAt ? c.createdAt.toISOString() : null,
+        ageDays: c.ageDays,
+        isUnpinnedLatest: c.isUnpinnedLatest,
       }));
 
       const [dk] = await db
@@ -138,6 +160,7 @@ export async function getHostDetail(id: number): Promise<HostDetailData | null> 
       summary,
       os: snap?.osInfo ?? null,
       packages,
+      containers,
       docker,
       uptimeSeries: series,
       uptimePct30d,

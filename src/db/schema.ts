@@ -1,6 +1,7 @@
 import { relations } from "drizzle-orm";
 import {
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -82,6 +83,35 @@ export const dockerInfo = pgTable(
   (t) => [index("docker_info_snapshot_id_idx").on(t.snapshotId)],
 );
 
+/**
+ * Per-container detail for one snapshot. is_unpinned_latest is a *proxy* for
+ * image drift risk (a :latest/untagged image is not pinned to a reproducible
+ * tag) — it is NOT a registry comparison. Detecting a genuinely out-of-date
+ * image requires a per-image registry query (`docker manifest inspect`), which
+ * is deliberately not implemented; see README "Known limitations".
+ */
+export const containers = pgTable(
+  "containers",
+  {
+    id: serial("id").primaryKey(),
+    snapshotId: integer("snapshot_id")
+      .notNull()
+      .references(() => snapshots.id, { onDelete: "cascade" }),
+    containerId: text("container_id").notNull(),
+    name: text("name").notNull(),
+    image: text("image").notNull(),
+    imageTag: text("image_tag"),
+    imageDigest: text("image_digest"),
+    status: text("status").notNull(),
+    healthStatus: text("health_status"),
+    restartCount: integer("restart_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }),
+    ageDays: doublePrecision("age_days"),
+    isUnpinnedLatest: boolean("is_unpinned_latest").notNull().default(false),
+  },
+  (t) => [index("containers_snapshot_id_idx").on(t.snapshotId)],
+);
+
 export const heartbeats = pgTable(
   "heartbeats",
   {
@@ -123,6 +153,7 @@ export const snapshotsRelations = relations(snapshots, ({ one, many }) => ({
   host: one(hosts, { fields: [snapshots.hostId], references: [hosts.id] }),
   packages: many(packages),
   dockerInfo: many(dockerInfo),
+  containers: many(containers),
 }));
 
 export const packagesRelations = relations(packages, ({ one }) => ({
@@ -131,6 +162,10 @@ export const packagesRelations = relations(packages, ({ one }) => ({
 
 export const dockerInfoRelations = relations(dockerInfo, ({ one }) => ({
   snapshot: one(snapshots, { fields: [dockerInfo.snapshotId], references: [snapshots.id] }),
+}));
+
+export const containersRelations = relations(containers, ({ one }) => ({
+  snapshot: one(snapshots, { fields: [containers.snapshotId], references: [snapshots.id] }),
 }));
 
 export const heartbeatsRelations = relations(heartbeats, ({ one }) => ({
@@ -145,4 +180,5 @@ export type Host = typeof hosts.$inferSelect;
 export type Snapshot = typeof snapshots.$inferSelect;
 export type Package = typeof packages.$inferSelect;
 export type DockerInfo = typeof dockerInfo.$inferSelect;
+export type Container = typeof containers.$inferSelect;
 export type DowntimeEvent = typeof downtimeEvents.$inferSelect;

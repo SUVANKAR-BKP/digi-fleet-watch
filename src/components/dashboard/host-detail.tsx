@@ -9,15 +9,17 @@ import {
 } from "lucide-react";
 import { fmtAgo, fmtPct } from "@/lib/format";
 import type { HostDetailData } from "@/lib/types";
+import { ContainerTable } from "./container-table";
 import { DowntimeLog } from "./downtime-log";
 import { PackageTable } from "./package-table";
 import { StatusBadge } from "./status-dot";
 import { UptimeChart } from "./uptime-chart";
 
 export function HostDetail({ data }: { data: HostDetailData }) {
-  const { summary: h, os, docker, packages, uptimeSeries, uptimePct30d } = data;
+  const { summary: h, os, docker, packages, containers, uptimeSeries, uptimePct30d } = data;
   const updates = packages.filter((p) => p.available).length;
   const secUpdates = packages.filter((p) => p.security).length;
+  const unpinned = containers.filter((c) => c.isUnpinnedLatest).length;
 
   return (
     <div className="space-y-6">
@@ -144,6 +146,25 @@ export function HostDetail({ data }: { data: HostDetailData }) {
           )}
         </div>
         <PackageTable packages={packages} />
+      </section>
+
+      {/* Containers */}
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Container className="h-4 w-4 text-primary" />
+            Containers
+            <span className="ml-1 font-mono text-xs font-normal text-muted-foreground tabular-nums">
+              {containers.length}
+            </span>
+          </h2>
+          {unpinned > 0 && (
+            <span className="text-xs font-medium text-warn">
+              {unpinned} unpinned (:latest) image{unpinned === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <ContainerTable containers={containers} />
       </section>
 
       {/* Downtime log */}

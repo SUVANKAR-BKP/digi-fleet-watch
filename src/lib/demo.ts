@@ -1,5 +1,6 @@
 import { DOWN_MS, STALE_MS } from "./thresholds";
 import type {
+  ContainerRow,
   DowntimeEventRow,
   HostDetailData,
   HostSummary,
@@ -27,6 +28,7 @@ interface DemoSpec {
   osInfo: { name: string; version: string; kernel: string };
   blips: Blip[];
   packages: PackageRow[];
+  containers: ContainerRow[];
   docker: HostDetailData["docker"];
 }
 
@@ -57,6 +59,53 @@ const cache01Pkgs: PackageRow[] = [
 
 const worker01Pkgs: PackageRow[] = [];
 
+function container(
+  id: number,
+  name: string,
+  image: string,
+  status: string,
+  healthStatus: string | null,
+  restartCount: number,
+  ageDays: number,
+  isUnpinnedLatest = false,
+): ContainerRow {
+  const tag = image.includes(":") ? image.split(":").pop()! : "latest";
+  return {
+    id,
+    containerId: `ctr-${id}-${name.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+    name,
+    image,
+    imageTag: tag,
+    imageDigest: "sha256:9f2c3d1e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c",
+    status,
+    healthStatus,
+    restartCount,
+    createdAt: new Date(Date.now() - ageDays * 86_400_000).toISOString(),
+    ageDays,
+    isUnpinnedLatest,
+  };
+}
+
+const web01Containers: ContainerRow[] = [
+  container(1, "web", "nginx:1.27.3", "running", "healthy", 0, 92.4),
+  container(2, "api", "myrepo/app:2.4.1", "running", "healthy", 2, 45.1),
+  container(3, "cache", "redis:7.2-alpine", "running", "healthy", 0, 120.7),
+  container(4, "db", "postgres:16.3", "running", "healthy", 1, 201.9),
+  container(5, "metrics", "prom/prometheus:latest", "running", null, 0, 310.2, true),
+  container(6, "grafana", "grafana/grafana:latest", "restarting", "starting", 14, 60.0, true),
+];
+
+const cache01Containers: ContainerRow[] = [
+  container(7, "redis-0", "redis:7.0.15", "running", "healthy", 0, 400.5),
+  container(8, "redis-1", "redis:7.0.15", "running", "healthy", 0, 400.5),
+  container(9, "sentinel", "redis:7.0.15", "exited", null, 3, 4.2),
+];
+
+const worker01Containers: ContainerRow[] = [
+  container(10, "worker", "myrepo/worker:1.8.0", "running", "healthy", 2, 12.6),
+  container(11, "beat", "myrepo/beat:latest", "running", null, 1, 1.3, true),
+];
+
 const DEMO_SPECS: DemoSpec[] = [
   {
     id: 1,
@@ -66,6 +115,7 @@ const DEMO_SPECS: DemoSpec[] = [
     osInfo: { name: "Ubuntu", version: "24.04 LTS", kernel: "6.8.0-45-generic" },
     blips: [{ offsetDays: 9, hours: 1.5 }],
     packages: web01Pkgs,
+    containers: web01Containers,
     docker: {
       installed: true, engineVersion: "27.4.1", apiVersion: "1.47",
       deprecated: false, containersRunning: 8, containersTotal: 8,
@@ -79,6 +129,7 @@ const DEMO_SPECS: DemoSpec[] = [
     osInfo: { name: "Debian", version: "12 (bookworm)", kernel: "6.1.0-22-amd64" },
     blips: [{ offsetDays: 21, hours: 3 }, { offsetDays: 3, hours: 2 }],
     packages: db01Pkgs,
+    containers: [],
     docker: { installed: false, engineVersion: null, apiVersion: null, deprecated: false, containersRunning: 0, containersTotal: 0 },
   },
   {
@@ -93,6 +144,7 @@ const DEMO_SPECS: DemoSpec[] = [
       { offsetDays: 0.05, hours: 5, ongoing: true },
     ],
     packages: cache01Pkgs,
+    containers: cache01Containers,
     docker: {
       installed: true, engineVersion: "20.10.24", apiVersion: "1.41",
       deprecated: true, containersRunning: 2, containersTotal: 4,
@@ -106,6 +158,7 @@ const DEMO_SPECS: DemoSpec[] = [
     osInfo: { name: "Ubuntu", version: "24.04 LTS", kernel: "6.8.0-45-generic" },
     blips: [],
     packages: worker01Pkgs,
+    containers: worker01Containers,
     docker: {
       installed: true, engineVersion: "26.1.4", apiVersion: "1.45",
       deprecated: false, containersRunning: 2, containersTotal: 3,
@@ -215,6 +268,7 @@ export function getDemoHostDetail(id: number): HostDetailData | null {
     summary: summaryFor(spec),
     os: spec.osInfo,
     packages: spec.packages,
+    containers: spec.containers,
     docker: spec.docker,
     uptimeSeries: buildSeries(spec.blips),
     uptimePct30d: computeUptime(spec.blips),
