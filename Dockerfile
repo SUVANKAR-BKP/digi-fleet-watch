@@ -1,37 +1,28 @@
-# syntax=docker/dockerfile:1
+# ---- base: enables pnpm via Corepack (built into Node 20) ----
+FROM node:20-alpine AS base
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
-# ---- deps: resolve only dependencies ----
-FROM node:20-alpine AS deps
+# ---- deps: install dependencies ----
+FROM base AS deps
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
 # ---- builder: compile the Next.js app ----
-FROM node:20-alpine AS builder
+FROM base AS builder
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN pnpm build
 
-# ---- runner: minimal production image (uses Next "standalone" output) ----
-FROM node:20-alpine AS runner
+# ---- runner: production image ----
+FROM base AS runner
 WORKDIR /app
-ENV NODE_ENV=production \
-    NEXT_TELEMETRY_DISABLED=1 \
-    PORT=3000 \
-    HOSTNAME=0.0.0.0
-
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 nextjs
-
-# Standalone server + static assets + public files
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-# Agent artifacts, served at runtime by /install.sh, /agent.sh, *.service, *.timer
 COPY --from=builder --chown=nextjs:nodejs /app/agent ./agent
-
 USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]

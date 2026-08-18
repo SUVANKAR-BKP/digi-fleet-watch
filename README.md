@@ -94,8 +94,8 @@ Requirements: Node.js 20+, a Postgres 16 database (or run the dashboard on
 demo data).
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 # open http://localhost:3000
 ```
 
@@ -363,21 +363,21 @@ ls -l /etc/digi-fleet-watch/agent.env
 
 ```bash
 cp .env.example .env        # local Postgres URL if you have one
-npm install
-npm run dev                 # http://localhost:3000
+pnpm install
+pnpm dev                    # http://localhost:3000
 ```
 
 Schema changes:
 
 ```bash
-npx drizzle-kit generate    # diff schema.ts → drizzle/*.sql
-npx drizzle-kit push        # apply against a local Postgres
+pnpm exec drizzle-kit generate    # diff schema.ts → drizzle/*.sql
+pnpm exec drizzle-kit push        # apply against a local Postgres
 ```
 
 Tests:
 
 ```bash
-npx vitest run              # ingest schema regression tests
+pnpm exec vitest run        # ingest schema regression tests
 ```
 
 ## License
