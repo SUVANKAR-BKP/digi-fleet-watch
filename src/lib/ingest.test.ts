@@ -104,4 +104,32 @@ describe("parseAgentPayload", () => {
     expect(() => parseAgentPayload(null)).toThrow();
     expect(() => parseAgentPayload("garbage")).toThrow();
   });
+
+  it("accepts docker.deprecated as a real JSON boolean", () => {
+    // agent.sh must send the deprecated flag as true/false (not 0/1, not
+    // "true"/"false"). This pins the schema to at least accept that.
+    const parsed = parseAgentPayload({
+      hostname: "dock-test",
+      docker: {
+        engine_version: "20.10.24",
+        api_version: "1.41",
+        deprecated: true,
+        containers_running: 2,
+        containers_total: 4,
+      },
+    });
+    expect(parsed.docker?.deprecated).toBe(true);
+  });
+
+  it("rejects docker.deprecated when it's a number (regression guard)", () => {
+    // The exact bug that reached production — agent.sh sent `deprecated: 1`
+    // instead of `deprecated: true`, and the server correctly 422-rejected
+    // it. This guard ensures the schema never silently accepts a number.
+    expect(() =>
+      parseAgentPayload({
+        hostname: "bad-docker",
+        docker: { engine_version: "20.10.24", deprecated: 1 as unknown as boolean },
+      }),
+    ).toThrow();
+  });
 });
