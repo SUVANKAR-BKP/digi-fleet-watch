@@ -70,6 +70,11 @@ curl http://localhost:3000/api/health   # {"ok":true}
 - The dashboard is at `http://localhost:3000`.
 - The schema is applied automatically on the **first** Postgres boot
   (`drizzle/*.sql` is mounted into `/docker-entrypoint-initdb.d`).
+- **Upgrading an existing install** (non-empty database volume)? The new
+  per-container migration isn't auto-applied — run it once:
+  ```bash
+  docker compose exec -T db psql -U fleetwatch -d fleetwatch < drizzle/0001_containers.sql
+  ```
 - Upgrading an existing install with a non-empty database volume? Apply the
   new containers migration once:
   `docker compose exec -T db psql -U fleetwatch -d fleetwatch < drizzle/0001_containers.sql`
