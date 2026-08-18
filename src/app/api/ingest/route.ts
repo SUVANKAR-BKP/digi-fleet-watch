@@ -29,6 +29,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, hostId, snapshotId }, { status: 201 });
   } catch (err) {
     if (err instanceof ZodError) {
+      // This is a trusted internal agent (not a public API), so we log the
+      // full field-by-field failure and return it verbatim — no more
+      // "manual curl reproduction" needed to debug a payload mismatch.
+      console.error("[ingest] validation failed", JSON.stringify(err.issues, null, 2));
       return NextResponse.json(
         { error: "invalid payload", issues: err.issues },
         { status: 422 },

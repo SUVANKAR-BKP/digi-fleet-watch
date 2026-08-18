@@ -52,11 +52,15 @@ const ingestSchema = z.object({
           name: z.string().min(1),
           image: z.string().min(1),
           image_tag: z.string().nullable().optional(),
-          image_digest: z.string().nullable().optional(),
+          // Locally-built images may have no RepoDigest, so `""` / null are valid.
+          image_digest: z.union([z.string(), z.null()]).optional(),
           status: z.string(),
-          health_status: z.string().nullable().optional(),
+          // Containers without a healthcheck send `""` / null here.
+          health_status: z.union([z.string(), z.null()]).optional(),
           restart_count: z.number().int().min(0).optional(),
-          created_at: z.string().datetime().nullable().optional(),
+          created_at: z
+            .union([z.string().datetime(), z.string().length(0), z.null()])
+            .optional(),
           age_days: z.number().min(0).optional(),
           is_unpinned_latest: z.boolean().optional(),
         }),

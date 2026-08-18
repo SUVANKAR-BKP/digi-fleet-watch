@@ -176,11 +176,11 @@ if [ -n "$docker_cmd" ]; then
         name: (.Name | ltrimstr("/")),
         image: .Config.Image,
         image_tag: (.Config.Image | split("/")[-1] | (if contains(":") then split(":")[-1] else "latest" end)),
-        image_digest: ((.RepoDigests[0] // "") | (if contains("@") then split("@")[-1] else "" end)),
-        status: (.State.Status // ""),
-        health_status: (.State.Health.Status // ""),
+        image_digest: ((.RepoDigests[0] // null) | (if . != null and contains("@") then split("@")[-1] else null end)),
+        status: (.State.Status // null),
+        health_status: (.State.Health.Status // null),
         restart_count: (.RestartCount // 0),
-        created_at: (.Created // "")
+        created_at: (.Created // null)
       }' 2>/dev/null || true)"
       [ -n "$cjson" ] || continue
 
