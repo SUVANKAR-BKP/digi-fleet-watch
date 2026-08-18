@@ -1,6 +1,5 @@
 [Unit]
-Description=FleetWatch agent — collect and report host state
-Documentation=https://github.com/your-org/fleetwatch
+Description=Digi Fleet Watch agent — collect and report host state
 After=network-online.target
 Wants=network-online.target
 
@@ -8,8 +7,8 @@ Wants=network-online.target
 Type=oneshot
 User=fleetwatch
 Group=fleetwatch
-EnvironmentFile=-/etc/fleetwatch/agent.env
-ExecStart=/bin/bash /opt/fleetwatch/agent.sh
+EnvironmentFile=-/etc/digi-fleet-watch/agent.env
+ExecStart=/bin/bash /opt/digi-fleet-watch/agent.sh
 
 # Restart the unit if it crashes; systemd timers still respect the schedule.
 Restart=on-failure

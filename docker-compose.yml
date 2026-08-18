@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    container_name: fleetwatch-app
+    container_name: digi-fleet-watch-app
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -22,7 +22,7 @@ services:
 
   db:
     image: postgres:16-alpine
-    container_name: fleetwatch-db
+    container_name: digi-fleet-watch-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: fleetwatch

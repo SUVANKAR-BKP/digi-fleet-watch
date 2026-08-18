@@ -1,4 +1,4 @@
--- FleetWatch initial schema (PostgreSQL 16)
+-- Digi Fleet Watch initial schema (PostgreSQL 16)
 -- Apply with: npx drizzle-kit push  (dev) or docker compose exec db psql -U fleetwatch -d fleetwatch -f /migrations/0001_init.sql
 
 CREATE TABLE IF NOT EXISTS "hosts" (

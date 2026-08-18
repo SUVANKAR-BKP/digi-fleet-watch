@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# FleetWatch agent
-# ----------------
-# Collects host package/Docker state and posts it to the central FleetWatch
-# server. Designed to run via a systemd timer (or cron) every 5 minutes.
+# Digi Fleet Watch agent
+# ----------------------
+# Collects host package/Docker state and posts it to the central Digi Fleet
+# Watch server. Designed to run via a systemd timer (or cron) every 5 minutes.
 #
 # Requirements: curl + jq only. Runs fine as an unprivileged user.
 #   * `apt list` needs fresh apt lists; a nightly `apt update` (or the agent
@@ -13,18 +13,18 @@
 #   * `debsecan` is optional: if installed it marks security-relevant updates;
 #     otherwise the agent degrades gracefully.
 #
-# Environment (from /etc/fleetwatch/agent.env or the shell):
+# Environment (from /etc/digi-fleet-watch/agent.env or the shell):
 #   FLEETWATCH_URL    base URL of the central server (no trailing slash)
 #   AGENT_API_TOKEN   shared secret matching the server's AGENT_API_TOKEN
 #   FLEETWATCH_LABEL  optional human-readable label for this host
-#   FLEETWATCH_LOG    log path (default /var/log/fleetwatch-agent.log)
+#   FLEETWATCH_LOG    log path (default /var/log/digi-fleet-watch.log)
 
 set -uo pipefail
 
 FLEETWATCH_URL="${FLEETWATCH_URL:-https://fleet.example.com}"
 AGENT_API_TOKEN="${AGENT_API_TOKEN:-}"
 FLEETWATCH_LABEL="${FLEETWATCH_LABEL:-}"
-LOG_FILE="${FLEETWATCH_LOG:-/var/log/fleetwatch-agent.log}"
+LOG_FILE="${FLEETWATCH_LOG:-/var/log/digi-fleet-watch.log}"
 HTTP_TIMEOUT="${FLEETWATCH_TIMEOUT:-30}"
 
 log() { printf '%s %s\n' "$(date -Is 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_FILE" 2>/dev/null || true; }

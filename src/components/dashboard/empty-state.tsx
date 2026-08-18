@@ -48,12 +48,12 @@ export function EmptyState() {
       <div className="w-full max-w-xl rounded-lg border border-border bg-background p-3 text-left font-mono text-xs leading-6">
         <div className="text-muted-foreground"># on each monitored host:</div>
         <div>
-          <span className="text-primary">$</span> AGENT_TOKEN=YOUR_SHARED_TOKEN \
-        </div>
-        <div className="pl-4">
-          FLEETWATCH_URL=https://fleet.example.com \
-        </div>
-        <div className="pl-4">bash /opt/fleetwatch/install-agent.sh</div>
+                  <span className="text-primary">$</span> AGENT_API_TOKEN=YOUR_SHARED_TOKEN \
+                </div>
+                <div className="pl-4">
+                  FLEETWATCH_URL=https://fleet.example.com \
+                </div>
+                <div className="pl-4">bash /opt/digi-fleet-watch/install.sh</div>
       </div>
     </div>
   );

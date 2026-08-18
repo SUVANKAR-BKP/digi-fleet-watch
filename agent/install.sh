@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# FleetWatch agent installer — run as root on each monitored host:
+# Digi Fleet Watch agent installer — run as root on each monitored host:
 #
 #   FLEETWATCH_URL=https://fleet.example.com \
 #   AGENT_API_TOKEN=<shared secret> \
-#   bash /opt/fleetwatch/install.sh
+#   bash /opt/digi-fleet-watch/install.sh
 #
 set -euo pipefail
 
-FLEETWATCH_DIR=/opt/fleetwatch
-ENV_DIR=/etc/fleetwatch
-LOG_FILE=/var/log/fleetwatch-agent.log
+FLEETWATCH_DIR=/opt/digi-fleet-watch
+ENV_DIR=/etc/digi-fleet-watch
+LOG_FILE=/var/log/digi-fleet-watch.log
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 : "${FLEETWATCH_URL:?set FLEETWATCH_URL=https://your-fleetwatch-server}"
@@ -31,8 +31,8 @@ fi
 install -d -o fleetwatch -g fleetwatch "$FLEETWATCH_DIR"
 install -d "$ENV_DIR"
 install -m 0755 "$SRC_DIR/agent.sh" "$FLEETWATCH_DIR/agent.sh"
-install -m 0644 "$SRC_DIR/fleetwatch-agent.service" /etc/systemd/system/
-install -m 0644 "$SRC_DIR/fleetwatch-agent.timer" /etc/systemd/system/
+install -m 0644 "$SRC_DIR/digi-fleet-watch.service" /etc/systemd/system/
+install -m 0644 "$SRC_DIR/digi-fleet-watch.timer" /etc/systemd/system/
 
 # 3. Configuration (mode 600, secret material)
 cat >"$ENV_DIR/agent.env" <<EOF
@@ -63,8 +63,8 @@ fi
 
 # 6. Start the 5-minute timer
 systemctl daemon-reload
-systemctl enable --now fleetwatch-agent.timer
+systemctl enable --now digi-fleet-watch.timer
 
-echo "FleetWatch agent installed and timer enabled."
+echo "Digi Fleet Watch agent installed and timer enabled."
 echo "Logs: $LOG_FILE   Config: $ENV_DIR/agent.env"
 echo "Test manually: sudo -u fleetwatch $FLEETWATCH_DIR/agent.sh"

@@ -16,11 +16,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "FleetWatch",
-    template: "%s · FleetWatch",
-  },
-  description:
-    "Self-hosted fleet monitoring for package updates, Docker health and uptime.",
+      default: "Digi Fleet Watch",
+      template: "%s · Digi Fleet Watch",
+    },
+    description:
+      "Digi Fleet Watch — self-hosted fleet monitoring for package updates, Docker health and uptime.",
 };
 
 export default function RootLayout({
@@ -38,8 +38,8 @@ export default function RootLayout({
             <Link href="/" className="flex items-center gap-2.5">
               <Logo className="h-7 w-7 text-primary" />
               <span className="text-[15px] font-semibold tracking-tight">
-                FleetWatch
-              </span>
+                              Digi Fleet Watch
+                            </span>
             </Link>
             <span className="hidden rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground sm:inline">
               self-hosted

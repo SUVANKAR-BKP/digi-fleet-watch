@@ -45,7 +45,7 @@ export async function runDowntimeCheck(): Promise<{ opened: number; closed: numb
         });
         opened++;
         await postSlackMessage(
-          `:red_circle: *FleetWatch* — host \`${row.hostname}\` is DOWN\n` +
+          `:red_circle: *Digi Fleet Watch* — host \`${row.hostname}\` is DOWN\n` +
             `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
         );
       }
