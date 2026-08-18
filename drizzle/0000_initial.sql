@@ -66,13 +66,34 @@ CREATE INDEX IF NOT EXISTS "heartbeats_host_id_idx" ON "heartbeats" ("host_id");
 CREATE INDEX IF NOT EXISTS "downtime_events_host_id_idx" ON "downtime_events" ("host_id");
 CREATE INDEX IF NOT EXISTS "downtime_events_open_idx" ON "downtime_events" ("host_id", "ended_at");
 
-ALTER TABLE "snapshots"
-	ADD CONSTRAINT "snapshots_host_id_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "hosts"("id") ON DELETE cascade;
-ALTER TABLE "packages"
-	ADD CONSTRAINT "packages_snapshot_id_snapshots_id_fk" FOREIGN KEY ("snapshot_id") REFERENCES "snapshots"("id") ON DELETE cascade;
-ALTER TABLE "docker_info"
-	ADD CONSTRAINT "docker_info_snapshot_id_snapshots_id_fk" FOREIGN KEY ("snapshot_id") REFERENCES "snapshots"("id") ON DELETE cascade;
-ALTER TABLE "heartbeats"
-	ADD CONSTRAINT "heartbeats_host_id_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "hosts"("id") ON DELETE cascade;
-ALTER TABLE "downtime_events"
-	ADD CONSTRAINT "downtime_events_host_id_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "hosts"("id") ON DELETE cascade;
+-- Foreign keys are wrapped so this file stays re-runnable against a database
+-- that already has them (the migration runner replays every file once).
+DO $$ BEGIN
+	ALTER TABLE "snapshots"
+		ADD CONSTRAINT "snapshots_host_id_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "hosts"("id") ON DELETE cascade;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+	ALTER TABLE "packages"
+		ADD CONSTRAINT "packages_snapshot_id_snapshots_id_fk" FOREIGN KEY ("snapshot_id") REFERENCES "snapshots"("id") ON DELETE cascade;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+	ALTER TABLE "docker_info"
+		ADD CONSTRAINT "docker_info_snapshot_id_snapshots_id_fk" FOREIGN KEY ("snapshot_id") REFERENCES "snapshots"("id") ON DELETE cascade;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+	ALTER TABLE "heartbeats"
+		ADD CONSTRAINT "heartbeats_host_id_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "hosts"("id") ON DELETE cascade;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+	ALTER TABLE "downtime_events"
+		ADD CONSTRAINT "downtime_events_host_id_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "hosts"("id") ON DELETE cascade;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;

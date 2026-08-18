@@ -118,3 +118,39 @@ fi
 echo "Digi Fleet Watch agent installed."
 echo "Logs: $LOG_FILE   Config: $ENV_DIR/agent.env"
 echo "Test manually: sudo -u fleetwatch $FLEETWATCH_DIR/agent.sh"
+
+# 8. Report once right now.
+#
+# `systemctl enable --now <timer>` starts the *timer*, not the service, so the
+# first report only happened at the next 5-minute boundary. That left the
+# operator staring at a dashboard with no host and no way to tell whether the
+# token, the URL or the firewall was wrong. Run the collector once here and
+# surface the outcome immediately.
+
+# The service account's shell is nologin and sudo is not guaranteed to be
+# installed, so pick whichever "run as another user" tool this host has.
+run_as_agent() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u fleetwatch -- env FLEETWATCH_VERBOSE=1 /bin/bash "$FLEETWATCH_DIR/agent.sh"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -u fleetwatch env FLEETWATCH_VERBOSE=1 /bin/bash "$FLEETWATCH_DIR/agent.sh"
+  else
+    su -s /bin/bash -c "FLEETWATCH_VERBOSE=1 /bin/bash '$FLEETWATCH_DIR/agent.sh'" fleetwatch
+  fi
+}
+
+echo
+echo "Sending a first report to $FLEETWATCH_URL ..."
+if run_as_agent; then
+  echo
+  echo "✓ Connected. This host should now be visible on the dashboard."
+  echo "  It will keep reporting every 5 minutes."
+else
+  status=$?
+  echo
+  echo "✗ The first report FAILED (exit $status)." >&2
+  echo "  The schedule is installed and will retry every 5 minutes." >&2
+  echo "  Check the reason above, or in $LOG_FILE." >&2
+  echo "  Re-run by hand with: sudo -u fleetwatch FLEETWATCH_VERBOSE=1 $FLEETWATCH_DIR/agent.sh" >&2
+  exit "$status"
+fi

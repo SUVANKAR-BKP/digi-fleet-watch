@@ -1,4 +1,4 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   doublePrecision,
@@ -10,6 +10,7 @@ import {
   serial,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 /** How a downtime event was first detected. */
@@ -140,6 +141,11 @@ export const downtimeEvents = pgTable(
   (t) => [
     index("downtime_events_host_id_idx").on(t.hostId),
     index("downtime_events_open_idx").on(t.hostId, t.endedAt),
+    // At most one open outage per host — this is what makes the concurrent
+    // insert in runDowntimeCheck() safe. See drizzle/0002.
+    uniqueIndex("downtime_events_one_open_per_host")
+      .on(t.hostId)
+      .where(sql`${t.endedAt} is null`),
   ],
 );
 

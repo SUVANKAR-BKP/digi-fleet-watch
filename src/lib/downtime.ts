@@ -1,6 +1,6 @@
-import { and, desc, eq, gte, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or } from "drizzle-orm";
 import { downtimeEvents, hosts } from "@/db/schema";
-import { getDb } from "./db";
+import { getDb, type DbExecutor } from "./db";
 import { sendAlertEmail } from "./mail";
 import { postSlackMessage } from "./slack";
 import { DOWN_MS, OPEN_DOWNTIME_AFTER_MS, STALE_MS } from "./thresholds";
@@ -39,51 +39,65 @@ export async function runDowntimeCheck(): Promise<{ opened: number; closed: numb
 
     if (age > OPEN_DOWNTIME_AFTER_MS) {
       if (!openEvent) {
-        await db.insert(downtimeEvents).values({
-          hostId: row.id,
-          startedAt: row.lastSeenAt,
-          detectedBy: "heartbeat_miss",
+        // The select above is advisory only: this runs on every dashboard
+        // load, so two concurrent requests can both reach here. The partial
+        // unique index (0002) makes the database reject the second insert,
+        // and an empty `returning` tells us we lost the race — so the alerts
+        // below fire exactly once per outage.
+        const inserted = await db
+          .insert(downtimeEvents)
+          .values({
+            hostId: row.id,
+            startedAt: row.lastSeenAt,
+            detectedBy: "heartbeat_miss",
+          })
+          .onConflictDoNothing()
+          .returning({ id: downtimeEvents.id });
+
+        if (inserted.length > 0) {
+          opened++;
+          await postSlackMessage(
+            `:red_circle: *Digi Fleet Watch* — host \`${row.hostname}\` is DOWN\n` +
+              `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
+          );
+          await sendAlertEmail({
+            subject: `HOST DOWN: ${row.hostname}`,
+            text:
+              `Digi Fleet Watch detected that host \`${row.hostname}\` is DOWN.\n\n` +
+              `No heartbeat since ${row.lastSeenAt.toISOString()}.\n\n` +
+              `Check the dashboard: ${getBaseUrl()}/hosts/${row.id}`,
+          });
+        }
+      }
+    } else if (openEvent) {
+      // Same reasoning: only the request whose UPDATE actually closed a row
+      // sends the recovery mail.
+      const recovered = await closeOpenDowntime(row.id, now, db);
+      if (recovered > 0) {
+        closed++;
+        await sendAlertEmail({
+          subject: `Host recovered: ${row.hostname}`,
+          text:
+            `Good news — host \`${row.hostname}\` is reporting again.\n\n` +
+            `Last heartbeat: ${now.toISOString()}\n\n` +
+            `Dashboard: ${getBaseUrl()}/hosts/${row.id}`,
         });
-        opened++;
-                await postSlackMessage(
-                  `:red_circle: *Digi Fleet Watch* — host \`${row.hostname}\` is DOWN\n` +
-                    `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
-                );
-                await sendAlertEmail({
-                  subject: `HOST DOWN: ${row.hostname}`,
-                  text:
-                    `Digi Fleet Watch detected that host \`${row.hostname}\` is DOWN.\n\n` +
-                    `No heartbeat since ${row.lastSeenAt.toISOString()}.\n\n` +
-                    `Check the dashboard: ${getBaseUrl()}/hosts/${row.id}`,
-                });
-              }
-            } else if (openEvent) {
-              await db
-                .update(downtimeEvents)
-                .set({ endedAt: now })
-                .where(and(eq(downtimeEvents.hostId, row.id), isNull(downtimeEvents.endedAt)));
-              closed++;
-              await sendAlertEmail({
-                subject: `Host recovered: ${row.hostname}`,
-                text:
-                  `Good news — host \`${row.hostname}\` is reporting again.\n\n` +
-                  `Last heartbeat: ${now.toISOString()}\n\n` +
-                  `Dashboard: ${getBaseUrl()}/hosts/${row.id}`,
-              });
-            }
+      }
+    }
   }
 
   return { opened, closed };
 }
 
 /** Closes any open downtime event for a host (called on ingest / recovery).
- * Returns the number of events closed. */
+ * Returns the number of events closed. Accepts an open transaction so the
+ * close can be committed atomically with the snapshot that proves recovery. */
 export async function closeOpenDowntime(
   hostId: number,
   endedAt: Date = new Date(),
+  exec: DbExecutor = getDb(),
 ): Promise<number> {
-  const db = getDb();
-  const rows = await db
+  const rows = await exec
     .update(downtimeEvents)
     .set({ endedAt })
     .where(and(eq(downtimeEvents.hostId, hostId), isNull(downtimeEvents.endedAt)))
@@ -91,8 +105,16 @@ export async function closeOpenDowntime(
   return rows.length;
 }
 
+/**
+ * Base URL used in alert links. `.env.example` documents PUBLIC_FLEETWATCH_URL
+ * as the canonical name with FLEETWATCH_PUBLIC_URL as the legacy alias, so both
+ * are read here — checking only the alias silently produced localhost links in
+ * every downtime email. Matches the precedence in install-context.ts.
+ */
 function getBaseUrl(): string {
-  return process.env.FLEETWATCH_PUBLIC_URL?.replace(/\/$/, "") || "http://localhost:3000";
+  const configured =
+    process.env.PUBLIC_FLEETWATCH_URL || process.env.FLEETWATCH_PUBLIC_URL;
+  return configured?.replace(/\/+$/, "") || "http://localhost:3000";
 }
 
 /** Uptime percentage over the last `days`. */
@@ -112,19 +134,61 @@ export async function calculateUptimePct(
       and(
         eq(downtimeEvents.hostId, hostId),
         lt(downtimeEvents.startedAt, now),
-        or(gte(downtimeEvents.startedAt, windowStart), isNull(downtimeEvents.endedAt)),
+        // An event overlaps the window when it is still open, or ended after
+        // the window began. Selecting on startedAt instead silently dropped
+        // outages that began before the window and ended inside it, which
+        // over-reported uptime (a 40-day-old outage that ended 5 days ago
+        // matched neither branch and counted as zero downtime).
+        or(isNull(downtimeEvents.endedAt), gt(downtimeEvents.endedAt, windowStart)),
       ),
     );
 
-  let downMs = 0;
-  for (const e of events) {
-    const s = Math.max(e.startedAt.getTime(), windowStart.getTime());
-    const end = e.endedAt ? e.endedAt.getTime() : now.getTime();
-    if (end > s) downMs += end - s;
-  }
-
+  const downMs = downtimeMsInWindow(events, windowStart, now);
   const upMs = Math.max(0, windowMs - downMs);
   return Math.round((upMs / windowMs) * 1000) / 10;
+}
+
+/** An outage as far as the uptime maths is concerned. */
+export interface DowntimeInterval {
+  startedAt: Date;
+  endedAt: Date | null;
+}
+
+/**
+ * Milliseconds of downtime that fall inside [windowStart, windowEnd].
+ *
+ * Extracted so the overlap rule can be tested without a database: each event is
+ * clipped to the window, which is what makes an outage that straddles the
+ * window boundary contribute only its overlapping part rather than nothing (or
+ * its whole duration).
+ */
+export function downtimeMsInWindow(
+  events: DowntimeInterval[],
+  windowStart: Date,
+  windowEnd: Date,
+): number {
+  const from = windowStart.getTime();
+  const to = windowEnd.getTime();
+
+  let downMs = 0;
+  for (const e of events) {
+    const start = Math.max(e.startedAt.getTime(), from);
+    const end = Math.min(e.endedAt ? e.endedAt.getTime() : to, to);
+    if (end > start) downMs += end - start;
+  }
+  return downMs;
+}
+
+/**
+ * yyyy-mm-dd in *local* time. The buckets below are local-midnight boundaries,
+ * so keying them with toISOString() (which is UTC) shifted every label by a day
+ * for anyone east of Greenwich — in IST, local midnight is 18:30 UTC the day
+ * before.
+ */
+function dayKey(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
 }
 
 /** Per-day uptime buckets for the last `days` (for the recharts chart). */
@@ -139,7 +203,7 @@ export async function uptimeSeries(hostId: number, days: number): Promise<Uptime
   const indexByDay = new Map<string, number>();
   for (let i = days - 1; i >= 0; i--) {
     const day = new Date(todayStart.getTime() - i * dayMs);
-    const key = day.toISOString().slice(0, 10);
+    const key = dayKey(day);
     indexByDay.set(key, series.length);
     series.push({ day: key, uptimePct: 100, downtimeSec: 0 });
   }
@@ -150,7 +214,8 @@ export async function uptimeSeries(hostId: number, days: number): Promise<Uptime
     .where(
       and(
         eq(downtimeEvents.hostId, hostId),
-        or(gte(downtimeEvents.startedAt, windowStart), isNull(downtimeEvents.endedAt)),
+        // Same overlap rule as calculateUptimePct — see the note there.
+        or(isNull(downtimeEvents.endedAt), gt(downtimeEvents.endedAt, windowStart)),
       ),
     );
 
@@ -166,7 +231,7 @@ export async function uptimeSeries(hostId: number, days: number): Promise<Uptime
       const dayStart = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate());
       const nextDay = new Date(dayStart.getTime() + dayMs);
       const overlap = Math.max(0, Math.min(en, nextDay.getTime()) - Math.max(s, dayStart.getTime()));
-      const idx = indexByDay.get(dayStart.toISOString().slice(0, 10));
+      const idx = indexByDay.get(dayKey(dayStart));
       if (idx !== undefined) {
         series[idx].downtimeSec += Math.round(overlap / 1000);
       }

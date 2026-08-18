@@ -15,9 +15,21 @@ export async function GET(
     return NextResponse.json({ error: "invalid host id" }, { status: 400 });
   }
 
-  const detail = await getHostDetail(num);
-  if (!detail) {
-    return NextResponse.json({ error: "host not found" }, { status: 404 });
+  try {
+    const detail = await getHostDetail(num);
+    if (!detail) {
+      return NextResponse.json({ error: "host not found" }, { status: 404 });
+    }
+    return NextResponse.json(detail);
+  } catch (err) {
+    // A 404 here used to hide real failures (e.g. a table the deployment's
+    // Postgres volume never got). Report them as 500s with the reason, so
+    // `curl /api/hosts/1` diagnoses the problem instead of misdirecting.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[host:${num}] failed`, err);
+    return NextResponse.json(
+      { error: "internal error", detail: message },
+      { status: 500 },
+    );
   }
-  return NextResponse.json(detail);
 }

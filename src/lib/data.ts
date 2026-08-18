@@ -15,6 +15,7 @@ import {
   uptimeSeries,
 } from "./downtime";
 import { getDemoHostDetail, getDemoOverview } from "./demo";
+import { ensureSchema } from "./migrate";
 import type {
   ContainerRow,
   DockerStatus,
@@ -25,22 +26,43 @@ import type {
 } from "./types";
 
 let availability: boolean | null = null;
+let lastProbeAt = 0;
 
-/** Cheap, cached probe of whether Postgres is reachable. */
+/** How long a failed probe is trusted before Postgres is tried again. */
+const UNAVAILABLE_RETRY_MS = 10_000;
+
+/**
+ * Cheap, cached probe of whether Postgres is reachable.
+ *
+ * A negative result is only cached briefly: the previous version memoised it
+ * for the lifetime of the process, so an app that started a few seconds before
+ * its database served demo data until someone restarted it.
+ */
 export async function dbAvailable(): Promise<boolean> {
-  if (availability !== null) return availability;
-  if (!process.env.DATABASE_URL) {
-    availability = false;
-    return availability;
+  if (!process.env.DATABASE_URL) return false;
+  if (availability === true) return true;
+  if (availability === false && Date.now() - lastProbeAt < UNAVAILABLE_RETRY_MS) {
+    return false;
   }
+
+  lastProbeAt = Date.now();
   try {
     await getDb().execute(sql`select 1`);
     availability = true;
   } catch (err) {
     console.warn("[db] unreachable — falling back to demo data", (err as Error).message);
     availability = false;
+    return false;
   }
-  return availability;
+
+  // The database answered; make sure its schema matches this build. Failure
+  // here is loud but non-fatal — the queries below will surface it precisely.
+  try {
+    await ensureSchema();
+  } catch (err) {
+    console.error("[db] schema migration failed", (err as Error).message);
+  }
+  return true;
 }
 
 const NO_DB_MSG =
@@ -70,11 +92,20 @@ export async function getOverview(): Promise<OverviewData> {
   }
 }
 
+/**
+ * Full detail for one host. Returns null only when the host genuinely does not
+ * exist — any other failure throws.
+ *
+ * This used to catch everything and return null, which the route and the page
+ * both reported as "host not found". A missing `containers` table therefore
+ * showed up as a 404 on a host the overview was happily listing, and the real
+ * error only existed in the server log.
+ */
 export async function getHostDetail(id: number): Promise<HostDetailData | null> {
   if (!(await dbAvailable())) {
     return getDemoHostDetail(id);
   }
-  try {
+  {
     await runDowntimeCheck();
     const db = getDb();
     const [host] = await db.select().from(hostsTable).where(eq(hostsTable.id, id));
@@ -166,9 +197,6 @@ export async function getHostDetail(id: number): Promise<HostDetailData | null> 
       uptimePct30d,
       downtimeEvents,
     };
-  } catch (err) {
-    console.error(`[host:${id}] failed`, err);
-    return null;
   }
 }
 

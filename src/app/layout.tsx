@@ -30,7 +30,7 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const { baseUrl, token } = await getInstallContext();
+  const { baseUrl, authConfigured, tokenConfigured } = await getInstallContext();
 
   return (
     <html lang="en" className="dark">
@@ -53,7 +53,11 @@ export default async function RootLayout({
                 <span className="h-1.5 w-1.5 rounded-full bg-ok" />
                 heartbeat every 5 min
               </span>
-              <AddHostDialog baseUrl={baseUrl} token={token} />
+              <AddHostDialog
+                baseUrl={baseUrl}
+                authConfigured={authConfigured}
+                tokenConfigured={tokenConfigured}
+              />
               <Link
                 href="/"
                 className="rounded-md border border-border bg-secondary px-2.5 py-1 font-medium text-secondary-foreground transition-colors hover:border-primary/40 hover:text-primary"

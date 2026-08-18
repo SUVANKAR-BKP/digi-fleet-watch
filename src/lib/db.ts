@@ -25,6 +25,22 @@ export function getDb() {
   return _db;
 }
 
+/**
+ * The underlying pg Pool. The migration runner needs a raw client so it can
+ * send multi-statement SQL (and dollar-quoted DO blocks) over the simple query
+ * protocol, which the Drizzle query builder does not expose.
+ */
+export function getPool(): Pool {
+  if (!_db) _db = makeDb();
+  return _pool!;
+}
+
+export type Db = ReturnType<typeof getDb>;
+/** The transaction handle Drizzle hands to `db.transaction(cb)`. */
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** Anything queries can run against — the pool client or an open transaction. */
+export type DbExecutor = Db | Tx;
+
 /** Closes the underlying pool (used by tests / graceful shutdown). */
 export async function closeDb() {
   if (_pool) {

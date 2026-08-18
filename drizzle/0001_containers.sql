@@ -22,5 +22,8 @@ CREATE TABLE IF NOT EXISTS "containers" (
 
 CREATE INDEX IF NOT EXISTS "containers_snapshot_id_idx" ON "containers" ("snapshot_id");
 
-ALTER TABLE "containers"
-	ADD CONSTRAINT "containers_snapshot_id_snapshots_id_fk" FOREIGN KEY ("snapshot_id") REFERENCES "snapshots"("id") ON DELETE cascade;
+DO $$ BEGIN
+	ALTER TABLE "containers"
+		ADD CONSTRAINT "containers_snapshot_id_snapshots_id_fk" FOREIGN KEY ("snapshot_id") REFERENCES "snapshots"("id") ON DELETE cascade;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;

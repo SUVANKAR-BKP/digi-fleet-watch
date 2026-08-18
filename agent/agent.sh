@@ -21,13 +21,36 @@
 
 set -uo pipefail
 
-FLEETWATCH_URL="${FLEETWATCH_URL:-}"
-AGENT_API_TOKEN="${AGENT_API_TOKEN:-}"
-FLEETWATCH_LABEL="${FLEETWATCH_LABEL:-}"
+# systemd supplies the config via EnvironmentFile, but a manual run
+# (`sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh`) has an empty
+# environment and used to die with "AGENT_API_TOKEN is not set". Load the
+# file here so both paths work; anything already exported still wins.
+_env_url="${FLEETWATCH_URL:-}"
+_env_token="${AGENT_API_TOKEN:-}"
+_env_label="${FLEETWATCH_LABEL:-}"
+AGENT_ENV_FILE="${FLEETWATCH_ENV_FILE:-/etc/digi-fleet-watch/agent.env}"
+if [ -r "$AGENT_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$AGENT_ENV_FILE"
+  set +a
+fi
+
+FLEETWATCH_URL="${_env_url:-${FLEETWATCH_URL:-}}"
+AGENT_API_TOKEN="${_env_token:-${AGENT_API_TOKEN:-}}"
+FLEETWATCH_LABEL="${_env_label:-${FLEETWATCH_LABEL:-}}"
 LOG_FILE="${FLEETWATCH_LOG:-/var/log/digi-fleet-watch.log}"
 HTTP_TIMEOUT="${FLEETWATCH_TIMEOUT:-30}"
 
-log() { printf '%s %s\n' "$(date -Is 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_FILE" 2>/dev/null || true; }
+# Set FLEETWATCH_VERBOSE=1 to mirror the log to stderr — the installer uses it
+# so its first test run reports success or failure on the terminal.
+log() {
+  local line
+  line="$(date -Is 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ) $*"
+  printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null || true
+  if [ -n "${FLEETWATCH_VERBOSE:-}" ]; then printf '%s\n' "$line" >&2; fi
+  return 0
+}
 die() { log "ERROR: $*"; exit 1; }
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
@@ -226,8 +249,16 @@ payload="$(jq -n \
 
 printf '%s' "$payload" | jq -e . >/dev/null 2>&1 || die "failed to build valid JSON payload"
 
+# Keep the response body: a 401 (wrong token), 422 (payload mismatch) and 500
+# (server-side schema problem) are indistinguishable from the status code
+# alone, and discarding it meant every failure looked the same in the log.
+resp_body="$(mktemp)"
+# ${ctmp:+...} keeps the container temp file in the cleanup list when the
+# Docker section ran, without tripping `set -u` when it did not.
+trap 'rm -f "$tmp" "$sec_tmp" "$resp_body" ${ctmp:+"$ctmp"}' EXIT
+
 post_once() {
-  curl -sS --max-time "$HTTP_TIMEOUT" -o /dev/null -w '%{http_code}' \
+  curl -sS --max-time "$HTTP_TIMEOUT" -o "$resp_body" -w '%{http_code}' \
     -X POST "$FLEETWATCH_URL/api/ingest" \
     -H "Authorization: Bearer $AGENT_API_TOKEN" \
     -H 'Content-Type: application/json' \
@@ -237,6 +268,7 @@ post_once() {
 code="$(post_once)"
 if [ "$code" != "201" ] && [ "$code" != "200" ]; then
   log "WARN: ingest returned HTTP $code — retrying once"
+  log "WARN: server said: $(head -c 500 "$resp_body" 2>/dev/null)"
   sleep 10
   code="$(post_once)"
 fi
@@ -244,5 +276,12 @@ fi
 if [ "$code" = "201" ] || [ "$code" = "200" ]; then
   log "OK: reported host '$hostname' (HTTP $code)"
 else
+  case "$code" in
+    401) log "HINT: AGENT_API_TOKEN does not match the server's. Re-run the Add Host command." ;;
+    422) log "HINT: the server rejected the payload shape — check for an agent/server version mismatch." ;;
+    5*)  log "HINT: the server errored. Check its logs; the database schema may be behind the app." ;;
+    000) log "HINT: could not reach $FLEETWATCH_URL — check firewall/DNS from this host." ;;
+  esac
+  log "server said: $(head -c 500 "$resp_body" 2>/dev/null)"
   die "ingest failed with HTTP $code"
 fi

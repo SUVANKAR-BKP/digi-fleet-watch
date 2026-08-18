@@ -23,6 +23,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/agent ./agent
+# Migrations are read at runtime by src/lib/migrate.ts. docker-compose only
+# applies drizzle/ on a brand-new Postgres volume, so the app re-applies them
+# itself to bring an existing volume up to date.
+COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
 USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]

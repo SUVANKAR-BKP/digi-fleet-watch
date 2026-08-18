@@ -1,7 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { Check, Copy, Eye, EyeOff, Plus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  AlertTriangle,
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  Loader2,
+  Plus,
+  ShieldAlert,
+} from "lucide-react";
+import { getInstallToken } from "@/app/actions/install";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,21 +27,49 @@ import { cn } from "@/lib/utils";
 
 export function AddHostDialog({
   baseUrl,
-  token,
+  authConfigured,
+  tokenConfigured,
 }: {
   baseUrl: string;
-  token: string;
+  authConfigured: boolean;
+  tokenConfigured: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const fullCommand = buildInstallCommand(baseUrl, token, label);
-  const visibleToken = revealed ? token : maskToken(token);
-  const visibleCommand = buildInstallCommand(baseUrl, visibleToken, label);
+  // The token is not part of the page — it is requested when the dialog opens.
+  const [token, setToken] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getInstallToken();
+      if (res.error) setError(res.error);
+      setToken(res.token);
+    } catch {
+      setError("Could not reach the server to fetch the token.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && !token && !loading && !error) void load();
+  }, [open, token, loading, error, load]);
+
+  const ready = token.length > 0;
+  const fullCommand = ready ? buildInstallCommand(baseUrl, token, label) : "";
+  const visibleCommand = ready
+    ? buildInstallCommand(baseUrl, revealed ? token : maskToken(token), label)
+    : "";
 
   async function copy() {
+    if (!ready) return;
     try {
       await navigator.clipboard.writeText(fullCommand);
       setCopied(true);
@@ -55,11 +93,34 @@ export function AddHostDialog({
           <DialogDescription>
             Copy the command below and run it <strong>as root</strong> on the
             server you want to monitor. It installs curl/jq if missing,
-            downloads the agent, and starts reporting within 5 minutes.
+            downloads the agent, sends a first report immediately, and then
+            reports every 5 minutes.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 pt-2">
+          {!authConfigured && (
+            <div className="flex gap-2 rounded-lg border border-security/40 bg-security/10 p-2.5 text-[11px] leading-4 text-security">
+              <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+              <span>
+                <strong>This instance has no password.</strong> Anyone who can
+                reach {baseUrl} can open this dialog and read the agent token.
+                Set <code>FLEETWATCH_DASHBOARD_PASSWORD</code> on the server, or
+                keep the port firewalled.
+              </span>
+            </div>
+          )}
+
+          {!tokenConfigured && (
+            <div className="flex gap-2 rounded-lg border border-down/40 bg-down/10 p-2.5 text-[11px] leading-4 text-down">
+              <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+              <span>
+                <code>AGENT_API_TOKEN</code> is not set on the server — agents
+                cannot authenticate until it is.
+              </span>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label
               htmlFor="host-label"
@@ -80,7 +141,8 @@ export function AddHostDialog({
               <button
                 type="button"
                 onClick={() => setRevealed((v) => !v)}
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                disabled={!ready}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
               >
                 {revealed ? (
                   <EyeOff className="h-3.5 w-3.5" />
@@ -89,7 +151,7 @@ export function AddHostDialog({
                 )}
                 {revealed ? "Hide token" : "Reveal token"}
               </button>
-              <Button size="sm" onClick={copy} className="gap-1.5">
+              <Button size="sm" onClick={copy} disabled={!ready} className="gap-1.5">
                 {copied ? (
                   <Check className="h-3.5 w-3.5" />
                 ) : (
@@ -98,19 +160,30 @@ export function AddHostDialog({
                 {copied ? "Copied" : "Copy"}
               </Button>
             </div>
-            <pre
-              className={cn(
-                "overflow-x-auto p-3 font-mono text-xs leading-5",
-                revealed ? "text-foreground" : "text-muted-foreground",
-              )}
-            >
-              {visibleCommand}
-            </pre>
+
+            {loading ? (
+              <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Fetching token…
+              </div>
+            ) : error ? (
+              <p className="p-3 text-xs text-down">{error}</p>
+            ) : (
+              <pre
+                className={cn(
+                  "overflow-x-auto p-3 font-mono text-xs leading-5",
+                  revealed ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                {visibleCommand}
+              </pre>
+            )}
           </div>
 
           <p className="text-[11px] text-muted-foreground">
-            The API token is hidden by default and only shown in full when you
-            reveal it — it&apos;s the same secret agents use to authenticate.
+            The token is hidden by default and only shown when you reveal it —
+            it&apos;s the same secret agents use to authenticate. <strong>Copy</strong>{" "}
+            always copies the real command.
           </p>
         </div>
       </DialogContent>
