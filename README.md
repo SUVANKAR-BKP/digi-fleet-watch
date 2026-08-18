@@ -35,10 +35,17 @@
 - **Self-hosted** — Next.js + PostgreSQL 16 run side by side in Docker
   Compose; no external services.
 - **One-liner onboarding** — add any host by pasting a single
-  `curl ... | bash` command from the dashboard's **+ Add Host** button.
+  `curl ... | bash` command from the dashboard's **+ Add Host** button. The
+  installer reports once immediately and tells you on the spot whether it
+  connected.
 - **Self-explaining failures** — a rejected agent payload is logged in full
   (field / expected / received) on both the server and the agent, so you never
   need to manually replay a failing request to debug it.
+- **Self-migrating schema** — SQL migrations are applied on start-up and
+  tracked in a ledger table, so upgrading an existing deployment never needs a
+  manual `psql` step.
+- **Optional password gate** — one env var puts the dashboard, its read APIs
+  and the agent token behind a login.
 
 ---
 
@@ -57,6 +64,8 @@ cp .env.example .env
 nano .env
 #   POSTGRES_PASSWORD      → pick a strong password
 #   AGENT_API_TOKEN        → openssl rand -hex 32
+#   FLEETWATCH_DASHBOARD_PASSWORD → strongly recommended; gates the dashboard
+#                            and the Add Host token behind a login
 #   SLACK_WEBHOOK_URL      → optional, for Slack downtime alerts
 #   SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO  → optional, for email alerts
 #   PUBLIC_FLEETWATCH_URL  → optional; override the URL shown in "Add Host"
@@ -71,22 +80,32 @@ curl http://localhost:3000/api/health   # {"ok":true}
 ```
 
 - The dashboard is at `http://localhost:3000`.
-- The schema is applied automatically on the **first** Postgres boot
-  (`drizzle/*.sql` is mounted into `/docker-entrypoint-initdb.d`).
-- **Upgrading an existing install** (non-empty database volume)? The new
-  per-container tables aren't auto-applied — run the migration once:
+- **Migrations are applied automatically on every app start.** `drizzle/*.sql`
+  is also mounted into `/docker-entrypoint-initdb.d`, but Postgres only runs
+  that directory when it initialises an *empty* data volume — so any migration
+  added after your volume was created would never run there. The app therefore
+  re-applies them itself at boot, tracking what it has already done in a
+  `_fleetwatch_migrations` table. Upgrading an existing install needs no manual
+  `psql` step; just `docker compose up -d --build`.
+- Confirm it worked:
   ```bash
-  docker compose exec -T db psql -U fleetwatch -d fleetwatch < drizzle/0001_containers.sql
+  docker compose logs app | grep migrate
+  # [migrate] applied 0001_containers.sql     (first run after an upgrade)
+  # [migrate] schema already up to date       (subsequent starts)
   ```
 - Put a reverse proxy (Caddy / nginx / Traefik) or Cloudflare Tunnel in front
   and terminate TLS.
 - Stop everything: `docker compose down` · wipe all data:
   `docker compose down -v`
 
-> **Security:** This dashboard has no built-in authentication. Put it behind
-> Cloudflare Zero Trust or HTTP basic auth at the reverse proxy before
-> exposing it beyond your local network — especially once the Add Host token
-> is visible on the page.
+> **Security — read this before exposing the dashboard.** The **+ Add Host**
+> dialog hands out `AGENT_API_TOKEN`, the secret agents use to post data. Set
+> `FLEETWATCH_DASHBOARD_PASSWORD` in `.env` to require a login for the
+> dashboard, the read APIs and that token. Leave it empty and **anyone who can
+> reach the instance can read the token and post fake data for any host** —
+> only acceptable on a network you fully trust. Agent routes (`/api/ingest`,
+> `/install.sh`, `/agent.sh`) are never password-gated; they authenticate with
+> the bearer token instead.
 
 ### Option B — local development (no Docker)
 
@@ -104,11 +123,12 @@ pnpm dev
 
 ## Install the agent on each host
 
-> **Fastest path:** click **+ Add Host** in the dashboard header (top right).
-> It gives you a ready-made one-liner — `curl -fsSL <this-server>/install.sh | bash`
-> with the correct token and server URL pre-filled, masked until you reveal
-> it. Paste and run it as root on the target host; the agent downloads itself
-> and starts reporting within 5 minutes.
+> **Fastest path:** click **+ Add Host** in the dashboard header (top right),
+> optionally type a label, then click **Copy**. Paste and run it as root on the
+> target host. The installer downloads the agent, **sends a first report
+> immediately**, and prints `✓ Connected` (or the exact reason it failed)
+> before it exits — you do not have to wait 5 minutes to find out whether it
+> worked.
 
 See [`agent/INSTALL.md`](agent/INSTALL.md) for details. The equivalent
 one-liner (as root on each monitored Debian/Ubuntu host) is:
@@ -121,18 +141,22 @@ curl -fsSL http://<YOUR_SERVER_HOST>:3000/install.sh | \
 ```
 
 `install.sh` bootstraps curl + jq if absent, then downloads the agent from the
-server — nothing needs to be transferred manually. It detects the init system
-before choosing how to run the agent every 5 minutes:
+server — nothing needs to be transferred manually. It creates the `fleetwatch`
+service user, schedules the agent (see
+[Scheduling & host requirements](#scheduling--host-requirements)), and then
+runs one report straight away so a failure surfaces immediately:
 
-- **systemd** (preferred) — installs `digi-fleet-watch.service` +
-  `digi-fleet-watch.timer` and enables the timer.
-- **cron** (no systemd) — writes `/etc/cron.d/digi-fleet-watch` for the
-  `fleetwatch` user.
-- **neither** (bare minimal container) — prints an error and points to the
-  [containerized agent](#containerized-agent-container-only-hosts) instead.
+```
+Sending a first report to http://<YOUR_SERVER_HOST>:3000 ...
+✓ Connected. This host should now be visible on the dashboard.
+  It will keep reporting every 5 minutes.
+```
 
-Afterwards the agent needs **no root** for normal operation and reports every
-5 minutes (unless you run it on a host with no init system).
+If that first report fails, the installer exits non-zero and prints the HTTP
+status, the server's response body and a hint — the schedule is still installed
+and keeps retrying every 5 minutes.
+
+Afterwards the agent needs **no root** for normal operation.
 
 ### Environment file & manual testing
 
@@ -140,12 +164,16 @@ The agent config lives in `/etc/digi-fleet-watch/agent.env`:
 
 - Owned by `root:fleetwatch` with mode `640` (readable by the `fleetwatch`
   user the agent runs as, **not world-readable**).
-- This is what makes the printed test command actually work:
+- Both paths read this same file, which is what makes the printed test command
+  work: systemd loads it via `EnvironmentFile=` *as root* before dropping to
+  `User=fleetwatch`, while a manual run reads it *as* `fleetwatch` — so the
+  group-read bit matters. With `root:root 0600` the timer works but the manual
+  run fails with `AGENT_API_TOKEN is not set`.
   ```bash
-  sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh
+  sudo -u fleetwatch FLEETWATCH_VERBOSE=1 /opt/digi-fleet-watch/agent.sh
   ```
-  (The systemd service and the manual `sudo -u fleetwatch` invocation both
-  read the same file.)
+  `FLEETWATCH_VERBOSE=1` mirrors the log to your terminal; without it the run
+  is silent and only writes to `/var/log/digi-fleet-watch.log`.
 
 ### How the URL is derived
 
@@ -161,10 +189,13 @@ uses a server URL that is **never hardcoded**:
 
 The Add Host one-liner passes this same URL as both the `curl -fsSL <URL>/install.sh`
 source **and** the `FLEETWATCH_URL=<URL>` variable, so the installer and the
-downloaded agent always target the exact same server. The `AGENT_API_TOKEN` in
-the command is read server-side from `process.env.AGENT_API_TOKEN` (the same
-value `/api/ingest` validates), shown **masked** by default with a reveal
-toggle; **Copy** always copies the full, working command.
+downloaded agent always target the exact same server.
+
+The `AGENT_API_TOKEN` in the command is **not** embedded in the page. It is
+fetched from a server action when you open the dialog, so it never appears in
+the HTML of every page load. In the command block the real token is rendered
+but **blurred** — copying it (via the button *or* by selecting the text) always
+yields a working command, and **Reveal token** un-blurs it for reading.
 
 The server also exposes the agent artifacts directly at `/install.sh`,
 `/agent.sh`, `/digi-fleet-watch.service` and `/digi-fleet-watch.timer` (public,
@@ -237,15 +268,18 @@ snapshots are simply absent for containerized hosts.
 
 | Endpoint                    | Method | Auth         | Description |
 | --------------------------- | ------ | ------------ | ----------- |
-| `/api/ingest`               | POST   | Bearer token | Agent intake: upserts host, stores snapshot + packages + Docker info, records heartbeat, closes open downtime events |
-| `/api/hosts`                | GET    | —            | All hosts with status (`online` / `stale` / `down`) + summary metrics |
-| `/api/hosts/[id]`           | GET    | —            | Host detail: packages, Docker, 30-day uptime, downtime log |
+| `/api/ingest`               | POST   | Bearer token | Agent intake: upserts host, stores snapshot + packages + Docker info, records heartbeat, closes open downtime events — all in one transaction |
+| `/api/hosts`                | GET    | session¹     | All hosts with status (`online` / `stale` / `down`) + summary metrics |
+| `/api/hosts/[id]`           | GET    | session¹     | Host detail: packages, containers, Docker, 30-day uptime, downtime log |
 | `/api/jobs/check-downtime`  | POST   | Bearer token | Runs the heartbeat-miss scan on demand (external cron) |
 | `/api/health`               | GET    | —            | Container liveness probe |
 | `/install.sh`               | GET    | public       | Bootstrapping installer fetched by `curl` |
 | `/agent.sh`                 | GET    | public       | Agent collector script, downloaded by the installer |
 | `/digi-fleet-watch.service` | GET    | public       | Systemd unit, downloaded by the installer |
 | `/digi-fleet-watch.timer`   | GET    | public       | Systemd timer, downloaded by the installer |
+
+¹ Requires a dashboard session **only when** `FLEETWATCH_DASHBOARD_PASSWORD` is
+set; open otherwise. Agent- and probe-facing routes are never session-gated.
 
 ### Status thresholds
 
@@ -313,27 +347,35 @@ The goal is: **when something breaks, the logs tell you the reason directly.**
 
 ### Agent side (`/var/log/digi-fleet-watch.log`)
 
-- On any non-2xx response, the agent logs **both** the HTTP status and the
-  **full response body** (e.g. the 422 `ZodError` issues), so you can see the
-  exact mismatch without replaying the request:
-  ```
-  ingest failed with HTTP 422 (on 2026-08-18T12:34:56Z)
-  ----- response body -----
-  {"error":"invalid payload","issues":[...]}
-  -------------------------
-  ```
-- Every run also logs the normal activity and any `curl` output.
+On any non-2xx response the agent logs the HTTP status, the **full response
+body**, and a hint naming the likely cause:
 
-### Common gotcha: manual test command
+```
+2026-08-18T16:27:10+00:00 WARN: ingest returned HTTP 422 — retrying once
+2026-08-18T16:27:10+00:00 WARN: server said: {"error":"invalid payload","issues":[{"code":"invalid_type","expected":"boolean","received":"number","path":["docker","deprecated"],...}]}
+2026-08-18T16:27:20+00:00 HINT: the server rejected the payload shape — check for an agent/server version mismatch.
+2026-08-18T16:27:20+00:00 ERROR: ingest failed with HTTP 422
+```
 
-`sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh` works because
-`/etc/digi-fleet-watch/agent.env` is owned by `root:fleetwatch` with mode
-`640` — readable by the `fleetwatch` user. If you see
-`AGENT_API_TOKEN is not set`, check the file's owner/perms:
+Run it by hand at any time, with the log mirrored to your terminal:
 
 ```bash
-ls -l /etc/digi-fleet-watch/agent.env
+sudo -u fleetwatch FLEETWATCH_VERBOSE=1 /opt/digi-fleet-watch/agent.sh
 ```
+
+The agent also type-checks its own payload before sending, so a malformed field
+fails locally with a clear message instead of as an opaque remote 422.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+| ------- | ----- | --- |
+| `HTTP 401` / `{"error":"unauthorized"}` | The token in `agent.env` doesn't match the server's `AGENT_API_TOKEN`. Most often the **displayed** (blurred) command was retyped rather than copied. | Re-run **+ Add Host** and use the **Copy** button, or correct the token in `/etc/digi-fleet-watch/agent.env`. |
+| `HTTP 422` naming a field | Agent/server version mismatch — the agent is older than the server's schema. | Re-run the Add Host command; it re-downloads `agent.sh` from the server. |
+| `AGENT_API_TOKEN is not set` on a manual run | `/etc/digi-fleet-watch/agent.env` isn't readable by the `fleetwatch` user. | `ls -l /etc/digi-fleet-watch/agent.env` — it should be `root:fleetwatch` mode `640`. Re-run the installer to repair it. |
+| Host page shows an error panel instead of data | The database schema is behind the app. | `docker compose logs app \| grep migrate`, then restart the app to re-run migrations. |
+| Dashboard shows demo data | Postgres unreachable. | `docker compose ps`; the app re-probes every 10s and recovers on its own once the database is up. |
+| Host stuck `stale` / `down` | The timer isn't firing, or the agent errors before POSTing. | `systemctl list-timers \| grep fleet` and `cat /var/log/digi-fleet-watch.log`. |
 
 ---
 
@@ -346,14 +388,17 @@ ls -l /etc/digi-fleet-watch/agent.env
 │   ├── install.sh          # root installer (systemd/cron, with error path)
 │   ├── Dockerfile.agent    # standalone containerized agent (loop entrypoint)
 │   └── INSTALL.md          # agent docs + privilege model
-├── drizzle/
-│   └── 0000_initial.sql    # Postgres schema (auto-applied on first boot)
-│   └── 0001_containers.sql # per-container tables (apply manually on upgrade)
+├── drizzle/                # SQL migrations, applied automatically at app start
+│   ├── 0000_initial.sql    # base schema
+│   ├── 0001_containers.sql # per-container tables
+│   └── 0002_one_open_downtime.sql  # partial unique index: one open outage per host
 ├── src/
 │   ├── app/                # Next.js App Router: pages, /api and script routes (/install.sh…)
 │   ├── components/         # dashboard UI (incl. Add Host dialog)
 │   ├── db/schema.ts        # Drizzle schema
-│   └── lib/                # db client, downtime logic, alerts, install-command helpers
+│   ├── instrumentation.ts  # start-up hook → runs migrations
+│   ├── middleware.ts       # optional dashboard password gate
+│   └── lib/                # db client, migrations, downtime logic, alerts, auth
 ├── docker-compose.yml      # app + Postgres 16
 ├── Dockerfile              # multi-stage production image
 └── .env.example            # copy to .env (never commit .env!)
@@ -374,11 +419,19 @@ pnpm exec drizzle-kit generate    # diff schema.ts → drizzle/*.sql
 pnpm exec drizzle-kit push        # apply against a local Postgres
 ```
 
-Tests:
+Checks:
 
 ```bash
-pnpm exec vitest run        # ingest schema regression tests
+pnpm test                   # ingest schema + uptime/status regression tests
+pnpm typecheck              # tsc --noEmit
+pnpm lint
 ```
+
+New migrations are picked up automatically: drop a `NNNN_name.sql` file into
+`drizzle/` and restart the app. Write them to be **idempotent** (`CREATE TABLE
+IF NOT EXISTS`, constraints wrapped in `DO $$ … EXCEPTION WHEN duplicate_object
+$$`) so they stay safe to replay against a database that predates the migration
+ledger.
 
 ## License
 
