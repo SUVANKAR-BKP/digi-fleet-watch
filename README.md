@@ -53,7 +53,8 @@ nano .env
 #   AGENT_API_TOKEN        → openssl rand -hex 32
 #   SLACK_WEBHOOK_URL      → optional, for Slack downtime alerts
 #   SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO  → optional, for email alerts
-#   PUBLIC_FLEETWATCH_URL  → <YOUR_SERVER_URL>   (used in the Add Host command; optional)
+#   PUBLIC_FLEETWATCH_URL  → optional; override the URL shown in "Add Host"
+#                            (see "How the URL is derived" below)
 
 # 3. Build + start (app on port 3000 + Postgres 16)
 docker compose up -d --build
@@ -112,6 +113,25 @@ curl -fsSL http://<YOUR_SERVER_HOST>:3000/install.sh | \
 systemd units from the server — nothing needs to be transferred manually.
 Afterwards the agent needs **no root** for normal operation and reports every
 5 minutes.
+
+### How the URL is derived
+
+The command you get from **+ Add Host** (and the matching `/install.sh` request)
+uses a server URL that is **never hardcoded**:
+
+1. If `PUBLIC_FLEETWATCH_URL` is set in `.env`, it is used verbatim — set this
+   once the server sits behind a reverse proxy / domain, e.g.
+   `PUBLIC_FLEETWATCH_URL=https://fleet.example.com`.
+2. Otherwise the URL is derived from the **incoming request**: its protocol
+   (`x-forwarded-proto` or `http`) plus its `Host` header, so it works by IP
+   (`http://135.125.236.47:3000`), hostname, or behind a TLS-terminating proxy.
+
+The Add Host one-liner passes this same URL as both the `curl -fsSL <URL>/install.sh`
+source **and** the `FLEETWATCH_URL=<URL>` variable, so the installer and the
+downloaded agent always target the exact same server. The `AGENT_API_TOKEN` in
+the command is read server-side from `process.env.AGENT_API_TOKEN` (the same
+value `/api/ingest` validates), shown **masked** by default with a reveal
+toggle; **Copy** always copies the full, working command.
 
 The server also exposes the agent artifacts directly at `/install.sh`,
 `/agent.sh`, `/digi-fleet-watch.service` and `/digi-fleet-watch.timer` (public,
