@@ -36,6 +36,9 @@
   Compose; no external services.
 - **One-liner onboarding** — add any host by pasting a single
   `curl ... | bash` command from the dashboard's **+ Add Host** button.
+- **Self-explaining failures** — a rejected agent payload is logged in full
+  (field / expected / received) on both the server and the agent, so you never
+  need to manually replay a failing request to debug it.
 
 ---
 
@@ -71,13 +74,10 @@ curl http://localhost:3000/api/health   # {"ok":true}
 - The schema is applied automatically on the **first** Postgres boot
   (`drizzle/*.sql` is mounted into `/docker-entrypoint-initdb.d`).
 - **Upgrading an existing install** (non-empty database volume)? The new
-  per-container migration isn't auto-applied — run it once:
+  per-container tables aren't auto-applied — run the migration once:
   ```bash
   docker compose exec -T db psql -U fleetwatch -d fleetwatch < drizzle/0001_containers.sql
   ```
-- Upgrading an existing install with a non-empty database volume? Apply the
-  new containers migration once:
-  `docker compose exec -T db psql -U fleetwatch -d fleetwatch < drizzle/0001_containers.sql`
 - Put a reverse proxy (Caddy / nginx / Traefik) or Cloudflare Tunnel in front
   and terminate TLS.
 - Stop everything: `docker compose down` · wipe all data:
@@ -120,10 +120,32 @@ curl -fsSL http://<YOUR_SERVER_HOST>:3000/install.sh | \
   bash
 ```
 
-`install.sh` bootstraps curl + jq if absent, then downloads the agent and
-systemd units from the server — nothing needs to be transferred manually.
+`install.sh` bootstraps curl + jq if absent, then downloads the agent from the
+server — nothing needs to be transferred manually. It detects the init system
+before choosing how to run the agent every 5 minutes:
+
+- **systemd** (preferred) — installs `digi-fleet-watch.service` +
+  `digi-fleet-watch.timer` and enables the timer.
+- **cron** (no systemd) — writes `/etc/cron.d/digi-fleet-watch` for the
+  `fleetwatch` user.
+- **neither** (bare minimal container) — prints an error and points to the
+  [containerized agent](#containerized-agent-container-only-hosts) instead.
+
 Afterwards the agent needs **no root** for normal operation and reports every
-5 minutes.
+5 minutes (unless you run it on a host with no init system).
+
+### Environment file & manual testing
+
+The agent config lives in `/etc/digi-fleet-watch/agent.env`:
+
+- Owned by `root:fleetwatch` with mode `640` (readable by the `fleetwatch`
+  user the agent runs as, **not world-readable**).
+- This is what makes the printed test command actually work:
+  ```bash
+  sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh
+  ```
+  (The systemd service and the manual `sudo -u fleetwatch` invocation both
+  read the same file.)
 
 ### How the URL is derived
 
@@ -276,6 +298,45 @@ cron that runs the scan even when nobody is looking:
 
 ---
 
+## Debugging
+
+The goal is: **when something breaks, the logs tell you the reason directly.**
+
+### Server side (`docker compose logs app`)
+
+- **Rejected payload (422)** — the full `ZodError` issues are logged with
+  `[ingest] validation failed` and returned verbatim in the JSON body,
+  e.g. which field failed, what was expected, and what was received. No more
+  `{"error":"invalid payload"}` dead-ends.
+- **Other failures** — `[ingest] failed`, `[overview] failed`, `[host:N] failed`
+  etc. include the actual error message.
+
+### Agent side (`/var/log/digi-fleet-watch.log`)
+
+- On any non-2xx response, the agent logs **both** the HTTP status and the
+  **full response body** (e.g. the 422 `ZodError` issues), so you can see the
+  exact mismatch without replaying the request:
+  ```
+  ingest failed with HTTP 422 (on 2026-08-18T12:34:56Z)
+  ----- response body -----
+  {"error":"invalid payload","issues":[...]}
+  -------------------------
+  ```
+- Every run also logs the normal activity and any `curl` output.
+
+### Common gotcha: manual test command
+
+`sudo -u fleetwatch /opt/digi-fleet-watch/agent.sh` works because
+`/etc/digi-fleet-watch/agent.env` is owned by `root:fleetwatch` with mode
+`640` — readable by the `fleetwatch` user. If you see
+`AGENT_API_TOKEN is not set`, check the file's owner/perms:
+
+```bash
+ls -l /etc/digi-fleet-watch/agent.env
+```
+
+---
+
 ## Project layout
 
 ```
@@ -287,6 +348,7 @@ cron that runs the scan even when nobody is looking:
 │   └── INSTALL.md          # agent docs + privilege model
 ├── drizzle/
 │   └── 0000_initial.sql    # Postgres schema (auto-applied on first boot)
+│   └── 0001_containers.sql # per-container tables (apply manually on upgrade)
 ├── src/
 │   ├── app/                # Next.js App Router: pages, /api and script routes (/install.sh…)
 │   ├── components/         # dashboard UI (incl. Add Host dialog)
@@ -310,6 +372,12 @@ Schema changes:
 ```bash
 npx drizzle-kit generate    # diff schema.ts → drizzle/*.sql
 npx drizzle-kit push        # apply against a local Postgres
+```
+
+Tests:
+
+```bash
+npx vitest run              # ingest schema regression tests
 ```
 
 ## License
