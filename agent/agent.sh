@@ -21,7 +21,7 @@
 
 set -uo pipefail
 
-FLEETWATCH_URL="${FLEETWATCH_URL:-https://fleet.example.com}"
+FLEETWATCH_URL="${FLEETWATCH_URL:-}"
 AGENT_API_TOKEN="${AGENT_API_TOKEN:-}"
 FLEETWATCH_LABEL="${FLEETWATCH_LABEL:-}"
 LOG_FILE="${FLEETWATCH_LOG:-/var/log/digi-fleet-watch.log}"
@@ -33,6 +33,7 @@ die() { log "ERROR: $*"; exit 1; }
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 [ -n "$AGENT_API_TOKEN" ] || die "AGENT_API_TOKEN is not set"
+[ -n "$FLEETWATCH_URL" ] || die "FLEETWATCH_URL is not set"
 
 # ---------------------------------------------------------------------------
 # OS facts

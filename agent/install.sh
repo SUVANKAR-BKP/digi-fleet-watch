@@ -2,9 +2,9 @@
 #
 # Digi Fleet Watch agent installer — run as root on each monitored host:
 #
-#   curl -fsSL https://fleet.example.com/install.sh | \
+#   curl -fsSL <YOUR_SERVER_URL>/install.sh | \
 #     AGENT_API_TOKEN=<shared secret> \
-#     FLEETWATCH_URL=https://fleet.example.com \
+#     FLEETWATCH_URL=<YOUR_SERVER_URL> \
 #     bash
 #
 # This is a self-contained bootstrap: it ensures curl + jq are present, then

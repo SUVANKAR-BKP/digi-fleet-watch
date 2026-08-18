@@ -9,16 +9,16 @@ It runs on the host itself (not in a container) so it can read the real
 As root on each monitored host:
 
 ```bash
-apt-get update && apt-get install -y curl jq          # Debian/Ubuntu
-FLEETWATCH_URL=https://fleet.example.com \
-AGENT_API_TOKEN=<the shared secret from your server .env> \
-bash /opt/digi-fleet-watch/install.sh
+curl -fsSL http://<YOUR_SERVER_HOST>:3000/install.sh | \
+  AGENT_API_TOKEN=<the shared secret from your server .env> \
+  FLEETWATCH_URL=http://<YOUR_SERVER_HOST>:3000 \
+  bash
 ```
 
-The installer:
+Run it as root on each monitored Debian/Ubuntu host. `install.sh`:
 
-1. creates a `fleetwatch` system user,
-2. copies `agent.sh` to `/opt/digi-fleet-watch/`,
+1. bootstraps `curl` + `jq` if they are missing,
+2. downloads `agent.sh` to `/opt/digi-fleet-watch/`,
 3. writes `/etc/digi-fleet-watch/agent.env` (mode 600) with the URL + token,
 4. installs `digi-fleet-watch.service` + `digi-fleet-watch.timer`,
 5. enables the timer — it fires every 5 minutes,
@@ -38,7 +38,7 @@ tail -f /var/log/digi-fleet-watch.log
 sudo install -m 0755 agent.sh /opt/digi-fleet-watch/agent.sh
 sudo mkdir -p /etc/digi-fleet-watch
 sudo tee /etc/digi-fleet-watch/agent.env >/dev/null <<'EOF'
-FLEETWATCH_URL=https://fleet.example.com
+FLEETWATCH_URL=http://<YOUR_SERVER_HOST>:3000
 AGENT_API_TOKEN=change-me
 FLEETWATCH_LABEL=
 EOF
@@ -75,7 +75,7 @@ fleetwatch ALL=(root) NOPASSWD: /usr/bin/docker version, /usr/bin/docker info
 
 | Variable            | Meaning                                            |
 | ------------------- | -------------------------------------------------- |
-| `FLEETWATCH_URL`    | Base URL of the central server, e.g. `https://fleet.example.com` |
+| `FLEETWATCH_URL`    | Base URL of the central server, e.g. `http://<YOUR_SERVER_HOST>:3000` |
 | `AGENT_API_TOKEN`   | Shared secret — must match the server's `AGENT_API_TOKEN` |
 | `FLEETWATCH_LABEL`  | Optional label shown in the dashboard              |
 

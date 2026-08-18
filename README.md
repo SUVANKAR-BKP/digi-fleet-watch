@@ -53,7 +53,7 @@ nano .env
 #   AGENT_API_TOKEN        → openssl rand -hex 32
 #   SLACK_WEBHOOK_URL      → optional, for Slack downtime alerts
 #   SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO  → optional, for email alerts
-#   PUBLIC_FLEETWATCH_URL  → https://fleet.example.com   (used in the Add Host command)
+#   PUBLIC_FLEETWATCH_URL  → <YOUR_SERVER_URL>   (used in the Add Host command; optional)
 
 # 3. Build + start (app on port 3000 + Postgres 16)
 docker compose up -d --build
@@ -102,9 +102,9 @@ See [`agent/INSTALL.md`](agent/INSTALL.md) for details. The equivalent
 one-liner (as root on each monitored Debian/Ubuntu host) is:
 
 ```bash
-curl -fsSL https://fleet.example.com/install.sh | \
+curl -fsSL http://<YOUR_SERVER_HOST>:3000/install.sh | \
   AGENT_API_TOKEN=<shared secret from .env> \
-  FLEETWATCH_URL=https://fleet.example.com \
+  FLEETWATCH_URL=http://<YOUR_SERVER_HOST>:3000 \
   bash
 ```
 
@@ -178,7 +178,7 @@ The downtime scan already runs on each dashboard load. For resilience, add a
 cron that runs the scan even when nobody is looking:
 
 ```bash
-*/1 * * * * curl -sS -X POST https://fleet.example.com/api/jobs/check-downtime \
+*/1 * * * * curl -sS -X POST http://<YOUR_SERVER_HOST>:3000/api/jobs/check-downtime \
   -H "Authorization: Bearer $AGENT_API_TOKEN"
 ```
 

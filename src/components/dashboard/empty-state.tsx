@@ -47,14 +47,16 @@ export function EmptyState() {
         </p>
       </div>
       <div className="w-full max-w-xl rounded-lg border border-border bg-background p-3 text-left font-mono text-xs leading-6">
-        <div className="text-muted-foreground"># on each monitored host:</div>
-        <div>
-                  <span className="text-primary">$</span> AGENT_API_TOKEN=YOUR_SHARED_TOKEN \
+        <div className="text-muted-foreground">
+                  # alternative — manual one-liner (replace the placeholders):
                 </div>
-                <div className="pl-4">
-                  FLEETWATCH_URL=https://fleet.example.com \
+                <div>
+                  <span className="text-primary">$</span>{" "}
+                  curl -fsSL &lt;YOUR_SERVER&gt;/install.sh \
                 </div>
-                <div className="pl-4">bash /opt/digi-fleet-watch/install.sh</div>
+                <div className="pl-4">AGENT_API_TOKEN=&lt;YOUR_TOKEN&gt; \</div>
+                <div className="pl-4">FLEETWATCH_URL=&lt;YOUR_SERVER&gt; \</div>
+                <div className="pl-4">bash</div>
       </div>
     </div>
   );
