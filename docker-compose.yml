@@ -1,0 +1,43 @@
+services:
+  app:
+    build: .
+    container_name: fleetwatch-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Container-network URL (overrides the host-local one in .env)
+      DATABASE_URL: postgres://fleetwatch:${POSTGRES_PASSWORD:-fleetwatch}@db:5432/fleetwatch
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  db:
+    image: postgres:16-alpine
+    container_name: fleetwatch-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fleetwatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fleetwatch}
+      POSTGRES_DB: fleetwatch
+    volumes:
+      # Persistent data
+      - fleetwatch_db:/var/lib/postgresql/data
+      # Apply the initial schema on first boot (empty volume only)
+      - ./drizzle:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleetwatch -d fleetwatch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fleetwatch_db:

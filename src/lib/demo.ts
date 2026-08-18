@@ -1,0 +1,223 @@
+import { DOWN_MS, STALE_MS } from "./thresholds";
+import type {
+  DowntimeEventRow,
+  HostDetailData,
+  HostSummary,
+  OverviewData,
+  PackageRow,
+  UptimeDay,
+} from "./types";
+
+const DAY = 86_400_000;
+
+interface Blip {
+  /** Days before now the event started. */
+  offsetDays: number;
+  /** Duration in hours (ignored when ongoing). */
+  hours: number;
+  /** True for the currently-open outage. */
+  ongoing?: boolean;
+}
+
+interface DemoSpec {
+  id: number;
+  hostname: string;
+  label: string | null;
+  lastSeenMinutesAgo: number;
+  osInfo: { name: string; version: string; kernel: string };
+  blips: Blip[];
+  packages: PackageRow[];
+  docker: HostDetailData["docker"];
+}
+
+const web01Pkgs: PackageRow[] = [
+  { id: 101, name: "openssl", installed: "3.0.13-0ubuntu3.4", available: "3.0.13-0ubuntu3.5", security: true, cveIds: ["CVE-2024-5535"] },
+  { id: 102, name: "curl", installed: "8.5.0-2ubuntu10.2", available: "8.5.0-2ubuntu10.3", security: false, cveIds: [] },
+  { id: 103, name: "nginx", installed: "1.24.0-2ubuntu7.1", available: "1.24.0-2ubuntu7.2", security: false, cveIds: [] },
+];
+
+const db01Pkgs: PackageRow[] = [
+  { id: 201, name: "postgresql-15", installed: "15.7-0+deb12u1", available: "15.8-0+deb12u1", security: true, cveIds: ["CVE-2024-7348"] },
+  { id: 202, name: "libssl3", installed: "3.0.11-1~deb12u2", available: "3.0.11-1~deb12u4", security: true, cveIds: ["CVE-2024-5535"] },
+  { id: 203, name: "systemd", installed: "252.26-1~deb12u1", available: "252.26-1~deb12u2", security: false, cveIds: [] },
+  { id: 204, name: "openssh-server", installed: "1:9.2p1-2+deb12u2", available: "1:9.2p1-2+deb12u3", security: false, cveIds: [] },
+  { id: 205, name: "python3", installed: "3.11.2-1+deb12u1", available: "3.11.2-1+deb12u2", security: false, cveIds: [] },
+];
+
+const cache01Pkgs: PackageRow[] = [
+  { id: 301, name: "redis-server", installed: "7.0.15-1ubuntu0.1", available: "7.0.15-1ubuntu0.2", security: true, cveIds: ["CVE-2024-31227"] },
+  { id: 302, name: "libc6", installed: "2.35-0ubuntu3.6", available: "2.35-0ubuntu3.8", security: true, cveIds: ["CVE-2024-2961"] },
+  { id: 303, name: "vim", installed: "8.2.3995-1ubuntu2.17", available: "8.2.3995-1ubuntu2.18", security: true, cveIds: ["CVE-2024-43374"] },
+  { id: 304, name: "bash", installed: "5.1-6ubuntu1.1", available: "5.1-6ubuntu1.2", security: true, cveIds: ["CVE-2024-6104"] },
+  { id: 305, name: "tar", installed: "1.34+dfsg-1ubuntu0.1.22.04.2", available: "1.34+dfsg-1ubuntu0.1.22.04.3", security: false, cveIds: [] },
+  { id: 306, name: "dnsmasq-base", installed: "2.86-1.1ubuntu0.1", available: "2.86-1.1ubuntu0.2", security: false, cveIds: [] },
+  { id: 307, name: "samba-libs", installed: "4.15.13+dfsg-0ubuntu1.6", available: "4.15.13+dfsg-0ubuntu1.7", security: true, cveIds: ["CVE-2024-37371"] },
+  { id: 308, name: "socat", installed: "1.7.4.1-3ubuntu4.0.1", available: "1.7.4.1-3ubuntu4.2", security: false, cveIds: [] },
+];
+
+const worker01Pkgs: PackageRow[] = [];
+
+const DEMO_SPECS: DemoSpec[] = [
+  {
+    id: 1,
+    hostname: "web-01",
+    label: "Frontend fleet (prod)",
+    lastSeenMinutesAgo: 2,
+    osInfo: { name: "Ubuntu", version: "24.04 LTS", kernel: "6.8.0-45-generic" },
+    blips: [{ offsetDays: 9, hours: 1.5 }],
+    packages: web01Pkgs,
+    docker: {
+      installed: true, engineVersion: "27.4.1", apiVersion: "1.47",
+      deprecated: false, containersRunning: 8, containersTotal: 8,
+    },
+  },
+  {
+    id: 2,
+    hostname: "db-01",
+    label: "Primary PostgreSQL",
+    lastSeenMinutesAgo: 35,
+    osInfo: { name: "Debian", version: "12 (bookworm)", kernel: "6.1.0-22-amd64" },
+    blips: [{ offsetDays: 21, hours: 3 }, { offsetDays: 3, hours: 2 }],
+    packages: db01Pkgs,
+    docker: { installed: false, engineVersion: null, apiVersion: null, deprecated: false, containersRunning: 0, containersTotal: 0 },
+  },
+  {
+    id: 3,
+    hostname: "cache-01",
+    label: "Redis cluster (staging)",
+    lastSeenMinutesAgo: 300,
+    osInfo: { name: "Ubuntu", version: "22.04 LTS", kernel: "5.15.0-119-generic" },
+    blips: [
+      { offsetDays: 12, hours: 6 },
+      { offsetDays: 3, hours: 4 },
+      { offsetDays: 0.05, hours: 5, ongoing: true },
+    ],
+    packages: cache01Pkgs,
+    docker: {
+      installed: true, engineVersion: "20.10.24", apiVersion: "1.41",
+      deprecated: true, containersRunning: 2, containersTotal: 4,
+    },
+  },
+  {
+    id: 4,
+    hostname: "worker-01",
+    label: "Job queue runner",
+    lastSeenMinutesAgo: 1,
+    osInfo: { name: "Ubuntu", version: "24.04 LTS", kernel: "6.8.0-45-generic" },
+    blips: [],
+    packages: worker01Pkgs,
+    docker: {
+      installed: true, engineVersion: "26.1.4", apiVersion: "1.45",
+      deprecated: false, containersRunning: 2, containersTotal: 3,
+    },
+  },
+];
+
+function eventStartMs(blip: Blip): number {
+  return Date.now() - blip.offsetDays * DAY - (blip.ongoing ? 0 : blip.hours) * 3_600_000;
+}
+
+function eventEndMs(blip: Blip): number {
+  if (blip.ongoing) return Date.now();
+  return eventStartMs(blip) + blip.hours * 3_600_000;
+}
+
+function computeUptime(blips: Blip[]): number {
+  const windowMs = 30 * DAY;
+  const now = Date.now();
+  const windowStart = now - windowMs;
+  let downMs = 0;
+  for (const b of blips) {
+    const s = Math.max(eventStartMs(b), windowStart);
+    const end = eventEndMs(b);
+    if (end > s) downMs += end - s;
+  }
+  return Math.round(((windowMs - Math.max(0, downMs)) / windowMs) * 1000) / 10;
+}
+
+function buildSeries(blips: Blip[]): UptimeDay[] {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const series: UptimeDay[] = [];
+  const indexByDay = new Map<string, number>();
+  for (let i = 29; i >= 0; i--) {
+    const day = new Date(todayStart.getTime() - i * DAY);
+    const key = day.toISOString().slice(0, 10);
+    indexByDay.set(key, series.length);
+    series.push({ day: key, uptimePct: 100, downtimeSec: 0 });
+  }
+  for (const b of blips) {
+    let s = Math.max(eventStartMs(b), todayStart.getTime() - 29 * DAY);
+    const en = Math.min(eventEndMs(b), Date.now());
+    let cur = new Date(s);
+    while (cur.getTime() < en) {
+      const dayStart = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate());
+      const nextDay = new Date(dayStart.getTime() + DAY);
+      const overlap = Math.max(0, Math.min(en, nextDay.getTime()) - Math.max(s, dayStart.getTime()));
+      const idx = indexByDay.get(dayStart.toISOString().slice(0, 10));
+      if (idx !== undefined) series[idx].downtimeSec += Math.round(overlap / 1000);
+      cur = nextDay;
+    }
+  }
+  for (const d of series) {
+    const down = Math.min(d.downtimeSec, 86_400);
+    d.uptimePct = Math.round(((86_400 - down) / 86_400) * 1000) / 10;
+  }
+  return series;
+}
+
+function buildEvents(blips: Blip[]): DowntimeEventRow[] {
+  return blips.map((b, i) => ({
+    id: i + 1,
+    startedAt: new Date(eventStartMs(b)).toISOString(),
+    endedAt: b.ongoing ? null : new Date(eventEndMs(b)).toISOString(),
+    detectedBy: "heartbeat_miss" as const,
+    durationSec: b.ongoing
+      ? null
+      : Math.round((eventEndMs(b) - eventStartMs(b)) / 1000),
+  }));
+}
+
+function summaryFor(spec: DemoSpec): HostSummary {
+  const lastSeen = new Date(Date.now() - spec.lastSeenMinutesAgo * 60_000);
+  const age = Date.now() - lastSeen.getTime();
+  const status = age <= STALE_MS ? "online" : age <= DOWN_MS ? "stale" : "down";
+  const outdated = spec.packages.length;
+  const security = spec.packages.filter((p) => p.security).length;
+  return {
+    id: spec.id,
+    hostname: spec.hostname,
+    label: spec.label,
+    lastSeenAt: lastSeen.toISOString(),
+    status,
+    outdatedPackages: outdated,
+    securityPackages: security,
+    dockerInstalled: spec.docker.installed,
+    dockerDeprecated: spec.docker.deprecated,
+    dockerEngineVersion: spec.docker.installed ? spec.docker.engineVersion : null,
+    uptimePct30d: computeUptime(spec.blips),
+    osLabel: `${spec.osInfo.name} ${spec.osInfo.version}`,
+  };
+}
+
+export function getDemoOverview(): OverviewData {
+  return {
+    demo: true,
+    hosts: DEMO_SPECS.map(summaryFor),
+  };
+}
+
+export function getDemoHostDetail(id: number): HostDetailData | null {
+  const spec = DEMO_SPECS.find((s) => s.id === id);
+  if (!spec) return null;
+  return {
+    demo: true,
+    summary: summaryFor(spec),
+    os: spec.osInfo,
+    packages: spec.packages,
+    docker: spec.docker,
+    uptimeSeries: buildSeries(spec.blips),
+    uptimePct30d: computeUptime(spec.blips),
+    downtimeEvents: buildEvents(spec.blips),
+  };
+}
