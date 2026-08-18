@@ -1,6 +1,6 @@
-# ---- base: enables pnpm via Corepack (built into Node 20) ----
+# ---- base: enables pnpm via Corepack (reads exact version from package.json) ----
 FROM node:20-alpine AS base
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable
 
 # ---- deps: install dependencies ----
 FROM base AS deps
