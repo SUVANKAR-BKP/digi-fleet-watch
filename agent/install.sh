@@ -55,7 +55,13 @@ FLEETWATCH_URL=$FLEETWATCH_URL
 AGENT_API_TOKEN=$AGENT_API_TOKEN
 FLEETWATCH_LABEL=$FLEETWATCH_LABEL
 EOF
-chmod 600 "$ENV_DIR/agent.env"
+# systemd reads EnvironmentFile as root before dropping to User=fleetwatch, so
+# root:root 0600 was enough for the timer — but a manual
+# `sudo -u fleetwatch .../agent.sh` run reads the file as the agent user and
+# failed with "AGENT_API_TOKEN is not set". Group-read for fleetwatch fixes the
+# documented test command while keeping the token off-limits to everyone else.
+chown "root:$(id -gn fleetwatch)" "$ENV_DIR/agent.env"
+chmod 640 "$ENV_DIR/agent.env"
 
 # 5. Log file owned by the agent user
 touch "$LOG_FILE"

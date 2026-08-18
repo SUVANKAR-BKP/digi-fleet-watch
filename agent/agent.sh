@@ -158,7 +158,11 @@ if [ -n "$docker_cmd" ]; then
     api="$(printf '%s' "$vjson" | jq -r '.Server.APIVersion // ""' 2>/dev/null)"
     running="$(printf '%s' "$ijson" | jq -r '.ContainersRunning // 0' 2>/dev/null)"
     total="$(printf '%s' "$ijson" | jq -r '.Containers // 0' 2>/dev/null)"
-    deprecated="$(is_docker_deprecated "$engine"; echo $?)"
+    # The server's schema requires a JSON boolean here and returns HTTP 422 for
+    # anything else. `echo $?` captured the exit status instead, which was both
+    # the wrong type *and* inverted: is_docker_deprecated succeeds (exit 0) when
+    # the engine is EOL, so it emitted 0 for deprecated and 1 for supported.
+    if is_docker_deprecated "$engine"; then deprecated=true; else deprecated=false; fi
     docker_json="$(jq -n \
       --arg v "$engine" \
       --arg a "$api" \
@@ -248,6 +252,14 @@ payload="$(jq -n \
     packages:$packages, docker:$docker, containers:$containers, collected_at:$collected}')"
 
 printf '%s' "$payload" | jq -e . >/dev/null 2>&1 || die "failed to build valid JSON payload"
+
+# Catch type mistakes here rather than as an opaque HTTP 422 from the server.
+# `docker.deprecated` in particular has to be a real boolean, not 0/1.
+printf '%s' "$payload" | jq -e '
+  (.docker == null or (.docker.deprecated | type) == "boolean")
+  and (.containers | type) == "array"
+  and (.packages | type) == "array"
+' >/dev/null 2>&1 || die "internal: payload failed its own type check (docker.deprecated must be a boolean)"
 
 # Keep the response body: a 401 (wrong token), 422 (payload mismatch) and 500
 # (server-side schema problem) are indistinguishable from the status code
