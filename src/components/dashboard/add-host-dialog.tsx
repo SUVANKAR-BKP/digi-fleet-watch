@@ -22,7 +22,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { buildInstallCommand, maskToken } from "@/lib/install-command";
+import { buildInstallCommand } from "@/lib/install-command";
 import { cn } from "@/lib/utils";
 
 export function AddHostDialog({
@@ -64,9 +64,17 @@ export function AddHostDialog({
 
   const ready = token.length > 0;
   const fullCommand = ready ? buildInstallCommand(baseUrl, token, label) : "";
-  const visibleCommand = ready
-    ? buildInstallCommand(baseUrl, revealed ? token : maskToken(token), label)
-    : "";
+
+  // The command is rendered with the *real* token, blurred by CSS while
+  // hidden, rather than with bullet characters substituted in. Rendering a
+  // masked string produced a command that looked pasteable but wasn't:
+  // selecting it by hand copied "AGENT_API_TOKEN=404e••••••••8cfe", which the
+  // server then rejected with 401. Blurring keeps it unreadable over someone's
+  // shoulder while leaving select-and-copy correct.
+  const TOKEN_SLOT = "\u0000";
+  const [beforeToken, afterToken] = ready
+    ? buildInstallCommand(baseUrl, TOKEN_SLOT, label).split(TOKEN_SLOT)
+    : ["", ""];
 
   async function copy() {
     if (!ready) return;
@@ -169,21 +177,25 @@ export function AddHostDialog({
             ) : error ? (
               <p className="p-3 text-xs text-down">{error}</p>
             ) : (
-              <pre
-                className={cn(
-                  "overflow-x-auto p-3 font-mono text-xs leading-5",
-                  revealed ? "text-foreground" : "text-muted-foreground",
-                )}
-              >
-                {visibleCommand}
+              <pre className="overflow-x-auto p-3 font-mono text-xs leading-5 text-foreground">
+                {beforeToken}
+                <span
+                  className={cn(
+                    "rounded-[2px] transition-[filter]",
+                    !revealed && "select-all bg-muted/50 blur-[4.5px]",
+                  )}
+                >
+                  {token}
+                </span>
+                {afterToken}
               </pre>
             )}
           </div>
 
           <p className="text-[11px] text-muted-foreground">
-            The token is hidden by default and only shown when you reveal it —
-            it&apos;s the same secret agents use to authenticate. <strong>Copy</strong>{" "}
-            always copies the real command.
+            The token is blurred, not replaced — copying the command (button or
+            manual selection) always yields the real one. Use{" "}
+            <strong>Reveal token</strong> only if you need to read it.
           </p>
         </div>
       </DialogContent>
