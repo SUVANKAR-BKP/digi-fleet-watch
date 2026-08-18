@@ -40,9 +40,10 @@ export function EmptyState() {
       <div>
         <h2 className="text-base font-semibold">No hosts are reporting in yet</h2>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          Install <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">agent.sh</code> on
-          each server — it runs every 5 minutes via systemd, collects package and
-          Docker state, and posts it to this dashboard.
+          Click <strong className="text-foreground">+ Add Host</strong> in the
+          header to get a ready-made one-liner, then run it as root on each
+          server. The agent downloads itself and starts reporting within 5
+          minutes.
         </p>
       </div>
       <div className="w-full max-w-xl rounded-lg border border-border bg-background p-3 text-left font-mono text-xs leading-6">

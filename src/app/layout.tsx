@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
+import { AddHostDialog } from "@/components/dashboard/add-host-dialog";
 import { Logo } from "@/components/dashboard/logo";
+import { getInstallContext } from "@/lib/install-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,18 +18,20 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-      default: "Digi Fleet Watch",
-      template: "%s · Digi Fleet Watch",
-    },
-    description:
-      "Digi Fleet Watch — self-hosted fleet monitoring for package updates, Docker health and uptime.",
+    default: "Digi Fleet Watch",
+    template: "%s · Digi Fleet Watch",
+  },
+  description:
+    "Digi Fleet Watch — self-hosted fleet monitoring for package updates, Docker health and uptime.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const { baseUrl, token } = await getInstallContext();
+
   return (
     <html lang="en" className="dark">
       <body
@@ -38,17 +42,18 @@ export default function RootLayout({
             <Link href="/" className="flex items-center gap-2.5">
               <Logo className="h-7 w-7 text-primary" />
               <span className="text-[15px] font-semibold tracking-tight">
-                              Digi Fleet Watch
-                            </span>
+                Digi Fleet Watch
+              </span>
             </Link>
             <span className="hidden rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground sm:inline">
               self-hosted
             </span>
-            <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="hidden items-center gap-1.5 md:inline-flex">
+            <div className="ml-auto flex items-center gap-2">
+              <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:inline-flex">
                 <span className="h-1.5 w-1.5 rounded-full bg-ok" />
                 heartbeat every 5 min
               </span>
+              <AddHostDialog baseUrl={baseUrl} token={token} />
               <Link
                 href="/"
                 className="rounded-md border border-border bg-secondary px-2.5 py-1 font-medium text-secondary-foreground transition-colors hover:border-primary/40 hover:text-primary"

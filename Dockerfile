@@ -29,6 +29,8 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Agent artifacts, served at runtime by /install.sh, /agent.sh, *.service, *.timer
+COPY --from=builder --chown=nextjs:nodejs /app/agent ./agent
 
 USER nextjs
 EXPOSE 3000

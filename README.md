@@ -69,6 +69,11 @@ curl http://localhost:3000/api/health   # {"ok":true}
 - Stop everything: `docker compose down` · wipe all data:
   `docker compose down -v`
 
+> **Security:** This dashboard has no built-in authentication. Put it behind
+> Cloudflare Zero Trust or HTTP basic auth at the reverse proxy before
+> exposing it beyond your local network — especially once the Add Host token
+> is visible on the page.
+
 ### Option B — local development (no Docker)
 
 Requirements: Node.js 20+, a Postgres 16 database (or run the dashboard on
@@ -85,17 +90,30 @@ npm run dev
 
 ## Install the agent on each host
 
-See [`agent/INSTALL.md`](agent/INSTALL.md) for the full guide. Quick version,
-as root on each monitored Debian/Ubuntu host:
+> **Fastest path:** click **+ Add Host** in the dashboard header (top right).
+> It gives you a ready-made one-liner — `curl -fsSL <this-server>/install.sh | bash`
+> with the correct token and server URL pre-filled, masked until you reveal
+> it. Paste and run it as root on the target host; the agent downloads itself
+> and starts reporting within 5 minutes.
+
+See [`agent/INSTALL.md`](agent/INSTALL.md) for details. The equivalent
+one-liner (as root on each monitored Debian/Ubuntu host) is:
 
 ```bash
-apt-get update && apt-get install -y curl jq
-FLEETWATCH_URL=https://fleet.example.com \
-AGENT_API_TOKEN=<shared secret from .env> \
-bash /opt/digi-fleet-watch/install.sh
+curl -fsSL https://fleet.example.com/install.sh | \
+  AGENT_API_TOKEN=<shared secret from .env> \
+  FLEETWATCH_URL=https://fleet.example.com \
+  bash
 ```
 
-The agent needs **no root** for normal operation and reports every 5 minutes.
+`install.sh` bootstraps curl + jq if absent, then downloads the agent and
+systemd units from the server — nothing needs to be transferred manually.
+Afterwards the agent needs **no root** for normal operation and reports every
+5 minutes.
+
+The server also exposes the agent artifacts directly at `/install.sh`,
+`/agent.sh`, `/digi-fleet-watch.service` and `/digi-fleet-watch.timer` (public,
+no secrets) so a host can bootstrap itself with no manual file transfer.
 
 ---
 
