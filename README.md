@@ -17,6 +17,23 @@
 
 ---
 
+## Features
+
+- **Agent-based** — a dependency-free Bash script (`curl` + `jq`) on each host
+  reports every 5 minutes via systemd timer or cron.
+- **Package tracking** — see outdated packages at a glance, with security
+  updates flagged and listed CVEs.
+- **Docker health** — engine version, API version, container counts, and
+  end-of-life deprecation badges.
+- **Uptime & downtime** — 30-day uptime chart and a host's full downtime
+  history.
+- **Alerting** — Slack webhooks and/or SMTP emails for downtime, new package
+  updates, and deprecated engines.
+- **Self-hosted** — Next.js + PostgreSQL 16 run side by side in Docker
+  Compose; no external services.
+
+---
+
 ## How to run
 
 ### Option A — Docker Compose (recommended for production)
@@ -92,19 +109,54 @@ The agent needs **no root** for normal operation and reports every 5 minutes.
 | `/api/jobs/check-downtime`  | POST   | Bearer token | Runs the heartbeat-miss scan on demand (external cron) |
 | `/api/health`               | GET    | —            | Container liveness probe |
 
-### Status thresholds & alerting
+### Status thresholds
 
 - **online** ≤ 15 min since last heartbeat · **stale** up to 1 h · **down** > 1 h.
-- A downtime event is recorded (and a **Slack** webhook is sent) after a host
-  has been silent for 15 minutes; it closes automatically when the agent
-  reports again.
-- **Email alerts** (via SMTP) are sent for:
-  - host going **down** and coming back **up**,
-  - **new package updates** on a host (security updates flagged `[SECURITY]`),
-    only once per change to avoid noise,
-  - a host first reporting a **deprecated Docker engine**.
-- The scan runs on each dashboard load, so no worker is required. For a
-  separate cron, POST to `/api/jobs/check-downtime` with the bearer token.
+- A downtime event is recorded after a host has been silent for 15 minutes and
+  closes automatically when the agent reports again.
+
+---
+
+## Alerting & notifications
+
+The downtime scan runs on every dashboard/API load, so **no separate worker is
+required**. For extra resilience, point a cron at the watchdog endpoint (below).
+
+### Slack (optional)
+
+Set `SLACK_WEBHOOK_URL` in `.env`. A message is posted whenever a host goes
+**down**.
+
+### Email (optional, SMTP)
+
+Set the following in `.env` to receive email alerts:
+
+```env
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false            # true for implicit TLS (port 465)
+SMTP_USER=alerts@example.com
+SMTP_PASS=change-me
+MAIL_FROM="Digi Fleet Watch <alerts@example.com>"
+ALERT_EMAIL_TO=ops@example.com
+```
+
+Leave `SMTP_HOST` empty to disable email. Emails are sent for:
+
+- a host going **down** and coming back **up**,
+- **new package updates** on a host (security updates flagged `[SECURITY]`),
+  sent only once per change to avoid noise,
+- a host first reporting a **deprecated Docker engine**.
+
+### Optional watchdog cron
+
+The downtime scan already runs on each dashboard load. For resilience, add a
+cron that runs the scan even when nobody is looking:
+
+```bash
+*/1 * * * * curl -sS -X POST https://fleet.example.com/api/jobs/check-downtime \
+  -H "Authorization: Bearer $AGENT_API_TOKEN"
+```
 
 ---
 
