@@ -2,6 +2,7 @@ import { AlertTriangle } from "lucide-react";
 import { notFound } from "next/navigation";
 import { HostDetail } from "@/components/dashboard/host-detail";
 import { getHostDetail } from "@/lib/data";
+import { resolveBaseUrl } from "@/lib/install-context";
 import type { HostDetailData } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +27,7 @@ export default async function HostPage({
 
   if (!data) notFound();
 
-  return <HostDetail data={data} />;
+  return <HostDetail data={data} baseUrl={await resolveBaseUrl()} />;
 }
 
 function HostLoadError({ message }: { message: string }) {

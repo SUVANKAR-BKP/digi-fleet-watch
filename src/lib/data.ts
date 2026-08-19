@@ -200,6 +200,29 @@ export async function getHostDetail(id: number): Promise<HostDetailData | null> 
   }
 }
 
+/**
+ * Removes a host and everything recorded for it. Returns false when no such
+ * host exists.
+ *
+ * Snapshots, packages, containers, heartbeats and downtime events all declare
+ * `ON DELETE CASCADE` against their parent, so one delete clears the lot.
+ *
+ * Note this only forgets the data: an agent still installed on the machine
+ * re-registers on its next heartbeat. Run /uninstall.sh on the host to stop it
+ * reporting.
+ */
+export async function deleteHost(id: number): Promise<boolean> {
+  if (!(await dbAvailable())) {
+    throw new Error("No database is configured, so hosts cannot be deleted.");
+  }
+  const db = getDb();
+  const rows = await db
+    .delete(hostsTable)
+    .where(eq(hostsTable.id, id))
+    .returning({ id: hostsTable.id });
+  return rows.length > 0;
+}
+
 async function buildHostSummary(hostId: number): Promise<HostSummary> {
   const db = getDb();
   const [host] = await db.select().from(hostsTable).where(eq(hostsTable.id, hostId));

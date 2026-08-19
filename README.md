@@ -46,6 +46,8 @@
   manual `psql` step.
 - **Optional password gate** — one env var puts the dashboard, its read APIs
   and the agent token behind a login.
+- **Clean decommissioning** — remove a host and its whole history from the
+  dashboard, with a one-liner that uninstalls the agent so it stays gone.
 
 ---
 
@@ -213,6 +215,69 @@ no secrets) so a host can bootstrap itself with no manual file transfer.
 - **neither** (bare minimal container) — prints an error and points to the
   [containerized agent](#containerized-agent-container-only-hosts) instead.
 
+### Removing a host
+
+Open the host's page and click **Stop monitoring**. You'll be asked to type the
+hostname to confirm; deleting removes the host and every snapshot, package
+list, container record, heartbeat and downtime event belonging to it (all via
+`ON DELETE CASCADE`). This cannot be undone.
+
+**Deleting from the dashboard does not stop the agent.** It is still installed
+on the machine and re-registers on its next heartbeat, so the host reappears
+within 5 minutes. To actually stop monitoring, uninstall the agent on that host
+first — the confirmation dialog shows this command, and it is also served
+directly:
+
+```bash
+curl -fsSL http://<YOUR_SERVER_HOST>:3000/uninstall.sh | sudo bash
+```
+
+`uninstall.sh` stops and removes the systemd timer/service (or the cron entry),
+deletes `/opt/digi-fleet-watch`, removes `/etc/digi-fleet-watch` — **including
+the stored agent token** — clears the log, and removes the `fleetwatch` service
+user. Pass `FLEETWATCH_KEEP_USER=1` to keep the user if something else on the
+host owns files as `fleetwatch`. It is idempotent and safe to run on a machine
+where the agent was never installed.
+
+Scriptable equivalent of the dashboard button:
+
+```bash
+curl -X DELETE http://<YOUR_SERVER_HOST>:3000/api/hosts/<id>
+```
+
+> Deletion is protected by the same dashboard session as the read APIs — which
+> means it is only actually protected when `FLEETWATCH_DASHBOARD_PASSWORD` is
+> set. Another reason to set it.
+
+### Rotating the agent token
+
+`AGENT_API_TOKEN` is a single secret shared by every agent, so replacing it
+naively makes the whole fleet start failing with `401` the moment the server
+restarts — and each host stays broken until someone re-enrols it. To avoid
+that, the server also accepts `AGENT_API_TOKEN_PREVIOUS` while a rotation is in
+flight, and `scripts/rotate-agent-token.sh` drives the sequence:
+
+```bash
+./scripts/rotate-agent-token.sh start    # new token issued; old one still accepted
+# → re-run "+ Add Host" on each monitored host (any order, no rush)
+./scripts/rotate-agent-token.sh status   # lists hosts still on the old token
+./scripts/rotate-agent-token.sh finish   # stop accepting the old token
+```
+
+`start` backs up `.env`, moves the current secret to `AGENT_API_TOKEN_PREVIOUS`,
+generates a fresh `AGENT_API_TOKEN`, and recreates the app container. Both
+secrets work until `finish`.
+
+Agents on the old secret are visible from both ends, so the rotation has a
+definite finish line:
+
+- **server** — `[ingest] host "web-01" is still using AGENT_API_TOKEN_PREVIOUS`
+- **host** — the same warning in `/var/log/digi-fleet-watch.log`, because the
+  ingest response carries a `tokenRotationPending` flag
+
+Rotate whenever the token may have been exposed — a shared screenshot, a
+screen-share, a public dashboard, or an operator leaving.
+
 ### Known limitations
 
 Detecting whether a container's image is genuinely **out of date** (its tag is
@@ -271,9 +336,11 @@ snapshots are simply absent for containerized hosts.
 | `/api/ingest`               | POST   | Bearer token | Agent intake: upserts host, stores snapshot + packages + Docker info, records heartbeat, closes open downtime events — all in one transaction |
 | `/api/hosts`                | GET    | session¹     | All hosts with status (`online` / `stale` / `down`) + summary metrics |
 | `/api/hosts/[id]`           | GET    | session¹     | Host detail: packages, containers, Docker, 30-day uptime, downtime log |
+| `/api/hosts/[id]`           | DELETE | session¹     | Stop monitoring a host and delete all of its history (cascades) |
 | `/api/jobs/check-downtime`  | POST   | Bearer token | Runs the heartbeat-miss scan on demand (external cron) |
 | `/api/health`               | GET    | —            | Container liveness probe |
 | `/install.sh`               | GET    | public       | Bootstrapping installer fetched by `curl` |
+| `/uninstall.sh`             | GET    | public       | Removes the agent from a host (schedule, files, stored token) |
 | `/agent.sh`                 | GET    | public       | Agent collector script, downloaded by the installer |
 | `/digi-fleet-watch.service` | GET    | public       | Systemd unit, downloaded by the installer |
 | `/digi-fleet-watch.timer`   | GET    | public       | Systemd timer, downloaded by the installer |
@@ -386,6 +453,7 @@ fails locally with a clear message instead of as an opaque remote 422.
 │   ├── agent.sh            # collector script (curl + jq only)
 │   ├── digi-fleet-watch.service / .timer
 │   ├── install.sh          # root installer (systemd/cron, with error path)
+│   ├── uninstall.sh        # removes the agent, schedule and stored token
 │   ├── Dockerfile.agent    # standalone containerized agent (loop entrypoint)
 │   └── INSTALL.md          # agent docs + privilege model
 ├── drizzle/                # SQL migrations, applied automatically at app start
@@ -399,6 +467,8 @@ fails locally with a clear message instead of as an opaque remote 422.
 │   ├── instrumentation.ts  # start-up hook → runs migrations
 │   ├── middleware.ts       # optional dashboard password gate
 │   └── lib/                # db client, migrations, downtime logic, alerts, auth
+├── scripts/
+│   └── rotate-agent-token.sh  # zero-downtime AGENT_API_TOKEN rotation
 ├── docker-compose.yml      # app + Postgres 16
 ├── Dockerfile              # multi-stage production image
 └── .env.example            # copy to .env (never commit .env!)

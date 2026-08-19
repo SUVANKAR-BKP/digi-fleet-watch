@@ -17,6 +17,7 @@ import { SESSION_COOKIE, authConfigured, verifySession } from "@/lib/dashboard-a
 const PUBLIC_PATHS = new Set([
   "/login",
   "/install.sh",
+  "/uninstall.sh",
   "/agent.sh",
   "/digi-fleet-watch.service",
   "/digi-fleet-watch.timer",

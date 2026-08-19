@@ -10,12 +10,20 @@ import {
 import { fmtAgo, fmtPct } from "@/lib/format";
 import type { HostDetailData } from "@/lib/types";
 import { ContainerTable } from "./container-table";
+import { DeleteHostButton } from "./delete-host-button";
 import { DowntimeLog } from "./downtime-log";
 import { PackageTable } from "./package-table";
 import { StatusBadge } from "./status-dot";
 import { UptimeChart } from "./uptime-chart";
 
-export function HostDetail({ data }: { data: HostDetailData }) {
+export function HostDetail({
+  data,
+  baseUrl,
+}: {
+  data: HostDetailData;
+  /** Used to build the agent uninstall command shown when removing the host. */
+  baseUrl: string;
+}) {
   const { summary: h, os, docker, packages, containers, uptimeSeries, uptimePct30d } = data;
   const updates = packages.filter((p) => p.available).length;
   const secUpdates = packages.filter((p) => p.security).length;
@@ -63,6 +71,14 @@ export function HostDetail({ data }: { data: HostDetailData }) {
             </span>
           </div>
         </div>
+
+        {!data.demo && (
+          <DeleteHostButton
+            hostId={h.id}
+            hostname={h.hostname}
+            baseUrl={baseUrl}
+          />
+        )}
       </div>
 
       {data.demo && (

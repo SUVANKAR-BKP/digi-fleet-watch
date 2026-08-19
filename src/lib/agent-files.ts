@@ -8,6 +8,7 @@ import path from "node:path";
  */
 const AGENT_FILES = {
   "install.sh": "text/x-shellscript; charset=utf-8",
+  "uninstall.sh": "text/x-shellscript; charset=utf-8",
   "agent.sh": "text/x-shellscript; charset=utf-8",
   "digi-fleet-watch.service": "text/plain; charset=utf-8",
   "digi-fleet-watch.timer": "text/plain; charset=utf-8",

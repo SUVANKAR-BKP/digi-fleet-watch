@@ -287,6 +287,13 @@ fi
 
 if [ "$code" = "201" ] || [ "$code" = "200" ]; then
   log "OK: reported host '$hostname' (HTTP $code)"
+  # The server flags agents still authenticating with the pre-rotation secret.
+  # Surfacing it here means the host itself tells you it needs re-enrolling,
+  # instead of the warning living only in the server log.
+  if jq -e '.tokenRotationPending == true' "$resp_body" >/dev/null 2>&1; then
+    log "WARN: this host is still using the OLD agent token. The server is honouring"
+    log "WARN: it during a rotation grace period. Re-run the Add Host command here."
+  fi
 else
   case "$code" in
     401) log "HINT: AGENT_API_TOKEN does not match the server's. Re-run the Add Host command." ;;
