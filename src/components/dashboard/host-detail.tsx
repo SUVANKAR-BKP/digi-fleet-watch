@@ -5,12 +5,15 @@ import {
   Container,
   Cpu,
   Monitor,
+  ShieldAlert,
   Timer,
 } from "lucide-react";
 import { fmtAgo, fmtPct } from "@/lib/format";
 import type { HostDetailData } from "@/lib/types";
 import { ContainerTable } from "./container-table";
 import { DeleteHostButton } from "./delete-host-button";
+import { ResourcePanel } from "./resource-panel";
+import { VulnerabilityTable } from "./vulnerability-table";
 import { DowntimeLog } from "./downtime-log";
 import { PackageTable } from "./package-table";
 import { StatusBadge } from "./status-dot";
@@ -91,6 +94,8 @@ export function HostDetail({
         </div>
       )}
 
+      <ResourcePanel metrics={data.metrics} history={data.metricHistory} />
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Uptime */}
         <section className="rounded-xl border border-border bg-card p-4">
@@ -148,6 +153,27 @@ export function HostDetail({
           )}
         </section>
       </div>
+
+      {/* Vulnerabilities */}
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <ShieldAlert className="h-4 w-4 text-primary" />
+            Vulnerabilities
+            <span className="ml-1 font-mono text-xs font-normal text-muted-foreground tabular-nums">
+              {data.vulnerabilities.length}
+            </span>
+          </h2>
+          {(h.vulnCritical > 0 || h.vulnHigh > 0) && (
+            <span className="text-xs font-medium text-security">
+              {h.vulnCritical > 0 && `${h.vulnCritical} critical`}
+              {h.vulnCritical > 0 && h.vulnHigh > 0 && " · "}
+              {h.vulnHigh > 0 && `${h.vulnHigh} high`}
+            </span>
+          )}
+        </div>
+        <VulnerabilityTable vulns={data.vulnerabilities} />
+      </section>
 
       {/* Packages */}
       <section className="rounded-xl border border-border bg-card p-4">

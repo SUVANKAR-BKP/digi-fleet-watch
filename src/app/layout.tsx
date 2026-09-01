@@ -77,6 +77,13 @@ export default async function RootLayout({
                     Overview
                   </Link>
 
+                  <Link
+                    href="/vulnerabilities"
+                    className="rounded-md border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    CVEs
+                  </Link>
+
                   <UserMenu username={user.username} role={user.role} />
                 </>
               ) : null}

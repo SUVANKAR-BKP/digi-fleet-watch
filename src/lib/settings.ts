@@ -24,7 +24,14 @@ export const SETTING_KEYS = {
   mailFrom: "smtp.from",
   alertEmailTo: "smtp.to",
   slackWebhookUrl: "slack.webhook_url",
+  retentionRawDays: "retention.raw_days",
+  retentionRollupDays: "retention.rollup_days",
 } as const;
+
+/** Raw rows are kept this long unless an admin changes it. */
+export const DEFAULT_RAW_RETENTION_DAYS = 14;
+/** Daily rollups are kept this long — cheap, so the default is generous. */
+export const DEFAULT_ROLLUP_RETENTION_DAYS = 730;
 
 /** Keys whose values are encrypted and never returned to the browser. */
 const SECRET_KEYS = new Set<string>([
@@ -117,6 +124,45 @@ export async function getMailSettings(): Promise<MailSettings> {
   };
 }
 
+export interface RetentionSettings {
+  rawDays: number;
+  rollupDays: number;
+}
+
+/**
+ * How long raw rows and rollups are kept. Clamped so a typo cannot delete
+ * everything (or disable pruning entirely and refill the disk).
+ */
+export async function getRetentionSettings(): Promise<RetentionSettings> {
+  let stored = new Map<string, string>();
+  try {
+    stored = await readStored();
+  } catch {
+    // Fall through to defaults; retention must not break on a settings read.
+  }
+
+  const clamp = (value: string | undefined, fallback: number, min: number, max: number) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(n)));
+  };
+
+  return {
+    rawDays: clamp(
+      stored.get(SETTING_KEYS.retentionRawDays),
+      DEFAULT_RAW_RETENTION_DAYS,
+      1,
+      365,
+    ),
+    rollupDays: clamp(
+      stored.get(SETTING_KEYS.retentionRollupDays),
+      DEFAULT_ROLLUP_RETENTION_DAYS,
+      7,
+      3650,
+    ),
+  };
+}
+
 /** Effective Slack configuration. */
 export async function getSlackSettings(): Promise<SlackSettings> {
   let stored = new Map<string, string>();
@@ -144,6 +190,8 @@ export interface SettingsView {
   mailFrom: { value: string; source: SettingSource };
   alertEmailTo: { value: string; source: SettingSource };
   slackWebhookSet: { isSet: boolean; source: SettingSource };
+  retentionRawDays: number;
+  retentionRollupDays: number;
   /** False when no server secret is configured, so secrets cannot be saved. */
   canStoreSecrets: boolean;
 }
@@ -168,6 +216,12 @@ export async function getSettingsView(): Promise<SettingsView> {
     mailFrom: pick(stored, K.mailFrom, process.env.MAIL_FROM),
     alertEmailTo: pick(stored, K.alertEmailTo, process.env.ALERT_EMAIL_TO),
     slackWebhookSet: { isSet: slack.value !== "", source: slack.source },
+    retentionRawDays: Number(
+      stored.get(K.retentionRawDays) ?? DEFAULT_RAW_RETENTION_DAYS,
+    ),
+    retentionRollupDays: Number(
+      stored.get(K.retentionRollupDays) ?? DEFAULT_ROLLUP_RETENTION_DAYS,
+    ),
     canStoreSecrets: encryptionAvailable(),
   };
 }

@@ -1,7 +1,10 @@
 import { redirect } from "next/navigation";
+import { AlertingPanel } from "@/components/dashboard/alerting-panel";
 import { SettingsForm } from "@/components/dashboard/settings-form";
 import { getCurrentUser } from "@/lib/auth-server";
 import { can } from "@/lib/rbac";
+import { listActiveSilences, listChannels } from "@/lib/alerts";
+import { listHostsForPicker } from "@/lib/data";
 import { getSettingsView } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -16,8 +19,16 @@ export default async function SettingsPage() {
   if (!can(user.role, "settings:manage")) redirect("/");
 
   let initial;
+  let channels;
+  let silences;
+  let hosts;
   try {
-    initial = await getSettingsView();
+    [initial, channels, silences, hosts] = await Promise.all([
+      getSettingsView(),
+      listChannels(),
+      listActiveSilences(),
+      listHostsForPicker(),
+    ]);
   } catch (err) {
     return (
       <div className="rounded-lg border border-down/40 bg-down/10 p-4 text-xs text-down">
@@ -40,6 +51,8 @@ export default async function SettingsPage() {
       </div>
 
       <SettingsForm initial={initial} />
+
+      <AlertingPanel channels={channels} silences={silences} hosts={hosts} />
     </div>
   );
 }

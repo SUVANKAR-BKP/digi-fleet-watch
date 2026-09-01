@@ -14,3 +14,15 @@ export const OPEN_DOWNTIME_AFTER_MS = STALE_MS;
 
 /** Uptime window used for percentages and the chart. */
 export const UPTIME_WINDOW_DAYS = 30;
+/** Disk usage at or above this fraction raises an alert. */
+export const DISK_WARN_PCT = 85;
+
+/** Disk usage at or above this fraction is treated as critical. */
+export const DISK_CRITICAL_PCT = 95;
+
+/**
+ * Disk alerts fire on a *threshold crossing*, not on every report: a host
+ * sitting at 90% would otherwise alert every 5 minutes forever. The previous
+ * sample is compared against the current one, mirroring how new package
+ * updates and Docker deprecation are detected.
+ */

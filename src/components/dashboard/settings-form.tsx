@@ -2,8 +2,20 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Mail, Send, ShieldAlert, Slack, X } from "lucide-react";
 import {
+  Check,
+  Database,
+  Loader2,
+  Mail,
+  Send,
+  ShieldAlert,
+  ShieldQuestion,
+  Slack,
+  X,
+} from "lucide-react";
+import {
+  runRetentionNow,
+  runVulnScanNow,
   saveAlertSettings,
   testEmail,
   testSlack,
@@ -37,9 +49,12 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
   const [alertEmailTo, setAlertEmailTo] = useState(initial.alertEmailTo.value);
   const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
   const [clearSlack, setClearSlack] = useState(false);
+  const [rawDays, setRawDays] = useState(String(initial.retentionRawDays));
+  const [rollupDays, setRollupDays] = useState(String(initial.retentionRollupDays));
 
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<"email" | "slack" | null>(null);
+  const [running, setRunning] = useState<"retention" | "scan" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -63,6 +78,8 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
       slackWebhookUrl,
       clearSmtpPass,
       clearSlackWebhook: clearSlack,
+      retentionRawDays: rawDays,
+      retentionRollupDays: rollupDays,
     });
     setSaving(false);
     if (!res.ok) {
@@ -84,6 +101,18 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
     setTesting(null);
     if (!res.ok) setError(res.error ?? "The test failed.");
     else setMessage(res.message ?? "Test sent.");
+  }
+
+  async function runJob(which: "retention" | "scan") {
+    reset();
+    setRunning(which);
+    const res = which === "retention" ? await runRetentionNow() : await runVulnScanNow();
+    setRunning(null);
+    if (!res.ok) setError(res.error ?? "The job failed.");
+    else {
+      setMessage(res.message ?? "Done.");
+      router.refresh();
+    }
   }
 
   return (
@@ -278,6 +307,96 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
             )}
           </div>
         </Field>
+      </section>
+
+      {/* Data retention */}
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Database className="h-4 w-4 text-primary" />
+            Data retention
+          </h2>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={running !== null || saving}
+            onClick={() => runJob("retention")}
+            className="gap-1.5"
+          >
+            {running === "retention" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Database className="h-3.5 w-3.5" />
+            )}
+            Run now
+          </Button>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground">
+              Keep raw data for (days)
+            </label>
+            <Input
+              value={rawDays}
+              onChange={(e) => setRawDays(e.target.value)}
+              inputMode="numeric"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Snapshots, packages, containers, metrics and heartbeats. 1–365.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground">
+              Keep daily rollups for (days)
+            </label>
+            <Input
+              value={rollupDays}
+              onChange={(e) => setRollupDays(e.target.value)}
+              inputMode="numeric"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Per-day summaries kept after raw rows are pruned. 7–3650.
+            </p>
+          </div>
+        </div>
+
+        <p className="mt-3 text-[11px] leading-4 text-muted-foreground">
+          Each host writes 288 samples a day. Days are summarised into rollups
+          before their raw rows are deleted, so trends survive at a fraction of
+          the size. Retention runs automatically every 6 hours.
+        </p>
+      </section>
+
+      {/* Vulnerability scanning */}
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <ShieldQuestion className="h-4 w-4 text-primary" />
+            Vulnerability scanning
+          </h2>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={running !== null || saving}
+            onClick={() => runJob("scan")}
+            className="gap-1.5"
+          >
+            {running === "scan" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            Scan now
+          </Button>
+        </div>
+        <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+          Installed package versions are matched against OSV.dev every 6 hours.
+          Debian and Ubuntu hosts only; no API key required, and no package data
+          leaves this server beyond name and version.
+        </p>
       </section>
 
       {error && (

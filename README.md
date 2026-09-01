@@ -28,6 +28,11 @@
 - **Per-container detail** — for every container (running or not): image/tag/
   digest, status, health check, restart count, and age, with an "unpinned
   (:latest)" flag for images that aren't pinned to a reproducible tag.
+- **Resource metrics** — CPU, load, memory, swap and per-mount disk usage,
+  with 24h charts and alerts when a filesystem crosses 85% / 95%.
+- **Vulnerability scanning** — installed package versions matched against
+  OSV.dev into real, CVSS-scored CVEs, with a fleet-wide "who is affected"
+  view.
 - **Uptime & downtime** — 30-day uptime chart and a host's full downtime
   history.
 - **Alerting** — Slack webhooks and/or SMTP emails for downtime, new package
@@ -45,6 +50,14 @@
 - **Self-migrating schema** — SQL migrations are applied on start-up and
   tracked in a ledger table, so upgrading an existing deployment never needs a
   manual `psql` step.
+- **Bounded storage** — daily rollups plus retention pruning, so history stays
+  useful without the database growing without limit.
+- **Background jobs** — downtime detection, retention and vulnerability scans
+  run on a scheduler, not only when someone has the dashboard open.
+- **Maintenance windows** — silence alerts for a host or the whole fleet
+  while you patch, without losing any monitoring history.
+- **Pluggable notifications** — Slack, Discord, Teams, ntfy, email or a
+  generic webhook, each with its own minimum severity.
 - **Accounts and roles** — named sign-ins with three roles (admin / operator /
   viewer), scrypt-hashed passwords, and a first-run setup flow.
 - **Clean decommissioning** — remove a host and its whole history from the
@@ -292,6 +305,91 @@ agent reports two practical proxies for drift risk:
 Registry-diff detection (`docker manifest inspect` / registry API) is a noted
 possible future enhancement — we deliberately don't fake registry data.
 
+## Resource metrics
+
+Every heartbeat now carries a resource sample alongside the inventory: CPU busy
+percentage, load averages, memory and swap, uptime, process count, and per-mount
+disk usage. It is all read from `/proc` and `df`, so the agent still needs
+nothing beyond `curl` and `jq`.
+
+Disk exhaustion is the most common way a Linux box dies, so filesystems get
+their own treatment: a usage bar per mount on the host page, a `disk NN%` badge
+on the overview card, and alerts at **85%** (warning, email) and **95%**
+(critical, email + Slack).
+
+Alerts fire on a **threshold crossing**, not on every report — a host parked at
+90% would otherwise page you every five minutes forever. The previous sample is
+compared against the current one, the same way new package updates and Docker
+deprecation are detected.
+
+Values the agent cannot read degrade to `null` rather than being omitted, so a
+host without `/proc/meminfo` still reports everything else instead of failing
+validation. Hosts still running the pre-metrics agent keep working; re-run the
+Add Host command to upgrade one.
+
+---
+
+## Data retention
+
+At a 5-minute cadence each host writes **288 snapshots a day**, each carrying a
+full `raw_payload` plus a row per package, per container and per filesystem.
+Nothing ever deleted them, so a modest fleet would quietly consume gigabytes a
+year.
+
+Two knobs at **/settings**:
+
+| Setting | Default | Range |
+| ------- | ------- | ----- |
+| Keep raw data for | 14 days | 1-365 |
+| Keep daily rollups for | 730 days | 7-3650 |
+
+The order matters: a day is **summarised into `host_daily_rollup` before** its
+raw rows are pruned, so long-range trends (uptime, package counts, CPU/memory
+averages and peaks, worst disk usage) survive at roughly 1/288th of the size.
+Rollup writes are idempotent, so a re-run after a partial failure recomputes the
+same numbers rather than double-counting.
+
+Deletes are batched, so an instance that has been neglected for months catches
+up over successive runs instead of issuing one enormous statement. Retention
+runs every 6 hours, and **Run now** on the settings page reclaims space
+immediately and reports exactly what it removed.
+
+---
+
+## Vulnerability scanning
+
+The agent already reported exact package names and versions — the expensive half
+of vulnerability scanning. That inventory is now matched against
+[OSV.dev](https://osv.dev), a free, key-less database that indexes Debian and
+Ubuntu security advisories.
+
+- **Per host** — an open-vulnerability table, worst first, with the **fixed
+  version** in its own column. A CVE list you cannot act on is just anxiety.
+- **Fleet-wide** — `/vulnerabilities` answers the question a per-host view
+  cannot: *which hosts are affected by CVE-XXXX, and what fixes it?* Search by
+  CVE, package or hostname.
+
+**Severity is computed, not guessed.** OSV publishes the CVSS vector string
+(`CVSS:3.1/AV:N/AC:L/...`) rather than a number, so `src/lib/cvss.ts` implements
+the v3.1 base-score formula — including the specification's round-*up*-to-one-decimal
+rule, which `Math.round` gets wrong and which decides whether an 8.95 shows as
+High or Critical. Where a distro advisory carries only a word ("important",
+"moderate") that is mapped onto the standard bands instead.
+
+Exposure is **tracked over time**, not replaced on each scan: `first_seen_at`
+shows how long a host has been vulnerable, and findings that disappear are
+marked resolved rather than deleted. The `host_vulnerabilities` table is keyed on
+the host rather than a package row, precisely so it outlives the snapshot that
+revealed it when retention prunes.
+
+Scans run every 6 hours (**Scan now** on the settings page for an immediate
+run). Only Debian and Ubuntu hosts are scanned — the ecosystem mapping returns
+nothing for other distributions rather than querying the wrong one, because a
+confidently incorrect answer is worse than none. Nothing leaves your server
+beyond package names and versions.
+
+---
+
 ## Accounts and roles
 
 The dashboard requires a signed-in account. Passwords are hashed with **scrypt**
@@ -406,7 +504,8 @@ snapshots are simply absent for containerized hosts.
 | `/uninstall.sh`             | GET    | public       | Removes the agent from a host (schedule, files, stored token) |
 | `/login` · `/setup`         | GET    | public       | Sign-in, and first-run admin creation while no account exists |
 | `/users`                    | GET    | admin        | Account management |
-| `/settings`                 | GET    | admin        | Alerting configuration (SMTP, Slack) |
+| `/settings`                 | GET    | admin        | Alerting, retention and scan configuration |
+| `/vulnerabilities`          | GET    | session¹     | Fleet-wide CVE view, searchable |
 | `/account`                  | GET    | session¹     | Change your own password |
 | `/agent.sh`                 | GET    | public       | Agent collector script, downloaded by the installer |
 | `/digi-fleet-watch.service` | GET    | public       | Systemd unit, downloaded by the installer |
@@ -426,8 +525,13 @@ role. Agent- and probe-facing routes are never session-gated — they use
 
 ## Alerting & notifications
 
-The downtime scan runs on every dashboard/API load, so **no separate worker is
-required**. For extra resilience, point a cron at the watchdog endpoint (below).
+Downtime detection runs on a **background scheduler** (every 2 minutes), so an
+outage over a quiet weekend is noticed without anyone having the dashboard
+open. Retention and vulnerability scans run on the same scheduler every 6
+hours. Each job takes a Postgres advisory lock first, so running multiple app
+replicas against one database does not double-alert or double-prune.
+
+The watchdog endpoint below still exists for belt-and-braces external cron.
 
 ### Configure from the dashboard (recommended)
 
@@ -448,6 +552,58 @@ before saving secrets, or the settings page will say so and refuse.
 > Rotating `FLEETWATCH_SESSION_SECRET` makes previously stored secrets
 > undecryptable. That degrades to "alerting unconfigured" with a log line
 > rather than an error — just re-enter them at /settings.
+
+### Maintenance windows
+
+Patching a host used to page whoever was on call. **Settings → Maintenance
+windows** suppresses alerts for one host or the whole fleet, for a chosen
+duration.
+
+Monitoring keeps recording throughout — only notifications stop, so uptime,
+downtime history and metrics stay accurate. A window can be ended early rather
+than waiting it out.
+
+Creating a silence needs the **operator** role, not admin: muting alerts before
+you patch a box is day-to-day work, not a configuration change.
+
+### Notification channels
+
+Beyond the SMTP recipient and Slack webhook, any number of channels can be
+added at **/settings**:
+
+| Type | Target |
+| ---- | ------ |
+| Email | an address (uses the configured SMTP transport) |
+| Slack | `https://hooks.slack.com/services/…` |
+| Discord | `https://discord.com/api/webhooks/…` |
+| Microsoft Teams | Office connector URL |
+| ntfy | `https://ntfy.sh/your-topic` |
+| Generic webhook | any URL — receives a stable JSON body |
+
+Each channel declares the **minimum severity** it wants (everything / warning
+and above / critical only), so a disk at 85% and a host that vanished can go to
+different places. Every channel has a **Test** button that delivers a real
+message and records the outcome; a failing webhook shows its last error inline
+instead of failing silently.
+
+Targets are encrypted at rest — a webhook URL is a credential — and are never
+returned to the browser; the table shows only the origin.
+
+The generic webhook body is a contract, and is covered by tests:
+
+```json
+{
+  "severity": "critical",
+  "title": "HOST DOWN: web-01",
+  "body": "No heartbeat since 2026-08-18T14:02:16Z.",
+  "hostname": "web-01",
+  "url": "http://fleet.example.com/hosts/1",
+  "timestamp": "2026-08-18T14:20:00.000Z"
+}
+```
+
+Delivery failures are recorded against the channel and never thrown: one dead
+webhook must not stop the others, nor fail the ingest that raised the alert.
 
 ### Slack (optional)
 
@@ -547,7 +703,13 @@ fails locally with a clear message instead of as an opaque remote 422.
 ├── drizzle/                # SQL migrations, applied automatically at app start
 │   ├── 0000_initial.sql    # base schema
 │   ├── 0001_containers.sql # per-container tables
-│   └── 0002_one_open_downtime.sql  # partial unique index: one open outage per host
+│   ├── 0002_one_open_downtime.sql  # one open outage per host
+│   ├── 0003_users.sql      # accounts and roles
+│   ├── 0004_settings.sql   # dashboard-editable configuration
+│   ├── 0005_metrics.sql    # host_metrics + disk_usage
+│   ├── 0006_retention.sql  # host_daily_rollup
+│   ├── 0007_vulnerabilities.sql  # OSV advisories + per-host exposure
+│   └── 0008_alerting.sql   # maintenance windows + notification channels
 ├── src/
 │   ├── app/                # Next.js App Router: pages, /api and script routes (/install.sh…)
 │   ├── components/         # dashboard UI (incl. Add Host dialog)
@@ -556,7 +718,9 @@ fails locally with a clear message instead of as an opaque remote 422.
 │   ├── middleware.ts       # session + role gate
 │   └── lib/                # db client, migrations, downtime logic, alerts,
 │                           # rbac.ts, session.ts, password.ts, users.ts,
-│                           # settings.ts, secrets.ts
+│                           # settings.ts, secrets.ts, scheduler.ts,
+│                           # retention.ts, osv.ts, cvss.ts, vulnerabilities.ts,
+│                           # alerts.ts (server), alert-channels.ts (shared)
 ├── scripts/
 │   └── rotate-agent-token.sh  # zero-downtime AGENT_API_TOKEN rotation
 ├── docker-compose.yml      # app + Postgres 16

@@ -38,6 +38,12 @@ export async function registerNode(): Promise<void> {
           );
         }
       }
+      // Background jobs: downtime detection no longer depends on someone
+      // having the dashboard open, and retention/vulnerability scanning have
+      // no UI trigger at all.
+      const { startScheduler } = await import("./lib/scheduler");
+      startScheduler();
+
       return;
     } catch (err) {
       const message = (err as Error).message;

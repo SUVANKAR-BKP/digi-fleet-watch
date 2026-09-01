@@ -1,8 +1,7 @@
 import { and, desc, eq, gt, isNull, lt, or } from "drizzle-orm";
 import { downtimeEvents, hosts } from "@/db/schema";
 import { getDb, type DbExecutor } from "./db";
-import { sendAlertEmail } from "./mail";
-import { postSlackMessage } from "./slack";
+import { dispatchAlert } from "./alerts";
 import { DOWN_MS, OPEN_DOWNTIME_AFTER_MS, STALE_MS } from "./thresholds";
 import type { DowntimeEventRow, HostStatus, UptimeDay } from "./types";
 
@@ -56,31 +55,29 @@ export async function runDowntimeCheck(): Promise<{ opened: number; closed: numb
 
         if (inserted.length > 0) {
           opened++;
-          await postSlackMessage(
-            `:red_circle: *Digi Fleet Watch* — host \`${row.hostname}\` is DOWN\n` +
-              `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
-          );
-          await sendAlertEmail({
-            subject: `HOST DOWN: ${row.hostname}`,
-            text:
-              `Digi Fleet Watch detected that host \`${row.hostname}\` is DOWN.\n\n` +
-              `No heartbeat since ${row.lastSeenAt.toISOString()}.\n\n` +
-              `Check the dashboard: ${getBaseUrl()}/hosts/${row.id}`,
+          await dispatchAlert({
+            severity: "critical",
+            title: `HOST DOWN: ${row.hostname}`,
+            body: `No heartbeat since ${row.lastSeenAt.toISOString()}.`,
+            hostId: row.id,
+            hostname: row.hostname,
+            url: `${getBaseUrl()}/hosts/${row.id}`,
           });
         }
       }
     } else if (openEvent) {
       // Same reasoning: only the request whose UPDATE actually closed a row
-      // sends the recovery mail.
+      // sends the recovery notice.
       const recovered = await closeOpenDowntime(row.id, now, db);
       if (recovered > 0) {
         closed++;
-        await sendAlertEmail({
-          subject: `Host recovered: ${row.hostname}`,
-          text:
-            `Good news — host \`${row.hostname}\` is reporting again.\n\n` +
-            `Last heartbeat: ${now.toISOString()}\n\n` +
-            `Dashboard: ${getBaseUrl()}/hosts/${row.id}`,
+        await dispatchAlert({
+          severity: "info",
+          title: `Host recovered: ${row.hostname}`,
+          body: `${row.hostname} is reporting again as of ${now.toISOString()}.`,
+          hostId: row.id,
+          hostname: row.hostname,
+          url: `${getBaseUrl()}/hosts/${row.id}`,
         });
       }
     }

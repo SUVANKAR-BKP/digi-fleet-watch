@@ -2,10 +2,14 @@ import Link from "next/link";
 import {
   Activity,
   Container,
+  Cpu,
+  HardDrive,
+  MemoryStick,
   PackageSearch,
   ShieldAlert,
 } from "lucide-react";
 import { fmtAgo, fmtPct } from "@/lib/format";
+import { DISK_CRITICAL_PCT, DISK_WARN_PCT } from "@/lib/thresholds";
 import type { HostSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { StatusBadge } from "./status-dot";
@@ -29,8 +33,56 @@ function Stat({ icon, label, value, className }: {
   );
 }
 
+function usageTone(pct: number | null): string {
+  if (pct === null) return "text-muted-foreground";
+  if (pct >= DISK_CRITICAL_PCT) return "text-down";
+  if (pct >= DISK_WARN_PCT) return "text-warn";
+  return "text-foreground";
+}
+
+function Meter({
+  icon,
+  label,
+  pct,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  pct: number | null;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          {icon}
+          {label}
+        </span>
+        <span className={cn("font-mono tabular-nums", usageTone(pct))}>
+          {pct === null ? "—" : `${pct.toFixed(0)}%`}
+        </span>
+      </div>
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-secondary">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all",
+            pct === null
+              ? "bg-transparent"
+              : pct >= DISK_CRITICAL_PCT
+                ? "bg-down"
+                : pct >= DISK_WARN_PCT
+                  ? "bg-warn"
+                  : "bg-primary/70",
+          )}
+          style={{ width: pct === null ? "0%" : `${Math.min(100, pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function HostCard({ host }: { host: HostSummary }) {
   const noUpdates = host.outdatedPackages === 0;
+  const hasMetrics =
+    host.cpuPct !== null || host.memUsedPct !== null || host.maxDiskUsePct !== null;
   return (
     <Link
       href={`/hosts/${host.id}`}
@@ -48,7 +100,21 @@ export function HostCard({ host }: { host: HostSummary }) {
               </span>
             ) : null}
           </div>
-          <StatusBadge status={host.status} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {host.diskAlert && (
+              <span
+                className={cn(
+                  "rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                  host.maxDiskUsePct !== null && host.maxDiskUsePct >= DISK_CRITICAL_PCT
+                    ? "border-down/60 bg-down/10 text-down"
+                    : "border-warn/60 bg-warn/10 text-warn",
+                )}
+              >
+                disk {host.maxDiskUsePct?.toFixed(0)}%
+              </span>
+            )}
+            <StatusBadge status={host.status} />
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3 border-t border-border pt-3 sm:grid-cols-3">
@@ -100,6 +166,26 @@ export function HostCard({ host }: { host: HostSummary }) {
             className={host.uptimePct30d >= 99.9 ? "text-ok" : "text-warn"}
           />
         </div>
+
+        {hasMetrics && (
+          <div className="grid grid-cols-3 gap-3 border-t border-border pt-3">
+            <Meter
+              icon={<Cpu className="h-3 w-3" strokeWidth={1.8} />}
+              label="cpu"
+              pct={host.cpuPct}
+            />
+            <Meter
+              icon={<MemoryStick className="h-3 w-3" strokeWidth={1.8} />}
+              label="mem"
+              pct={host.memUsedPct}
+            />
+            <Meter
+              icon={<HardDrive className="h-3 w-3" strokeWidth={1.8} />}
+              label="disk"
+              pct={host.maxDiskUsePct}
+            />
+          </div>
+        )}
 
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
           <span>{host.osLabel ?? "unknown OS"}</span>

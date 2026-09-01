@@ -11,6 +11,7 @@ export function Overview({ data }: { data: OverviewData }) {
   const outdated = hosts.reduce((a, h) => a + h.outdatedPackages, 0);
   const security = hosts.reduce((a, h) => a + h.securityPackages, 0);
   const deprecatedDocker = hosts.filter((h) => h.dockerDeprecated).length;
+  const diskPressure = hosts.filter((h) => h.diskAlert).length;
 
   return (
     <div className="space-y-6">
@@ -32,6 +33,11 @@ export function Overview({ data }: { data: OverviewData }) {
           <Chip dotClass="bg-ok" label={`${online} online`} />
           <Chip dotClass="bg-warn" label={`${stale} stale`} />
           <Chip dotClass="bg-down" label={`${down} down`} />
+          {diskPressure > 0 && (
+            <span className="ml-1 rounded-full border border-warn/50 bg-warn/10 px-2 py-1 font-medium text-warn">
+              {diskPressure} disk {diskPressure === 1 ? "warning" : "warnings"}
+            </span>
+          )}
           {deprecatedDocker > 0 && (
             <span className="ml-1 rounded-full border border-security/50 bg-security/10 px-2 py-1 font-medium text-security">
               {deprecatedDocker} Docker EOL

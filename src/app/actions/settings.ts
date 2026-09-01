@@ -23,6 +23,8 @@ export interface AlertSettingsInput {
   /** Explicit clears, since blank means "unchanged" for the two secrets. */
   clearSmtpPass?: boolean;
   clearSlackWebhook?: boolean;
+  retentionRawDays: string;
+  retentionRollupDays: string;
 }
 
 function invalidPort(value: string): boolean {
@@ -58,9 +60,26 @@ export async function saveAlertSettings(
     };
   }
 
+  const rawDays = Number(input.retentionRawDays);
+  const rollupDays = Number(input.retentionRollupDays);
+  if (!Number.isInteger(rawDays) || rawDays < 1 || rawDays > 365) {
+    return { ok: false, error: "Raw retention must be between 1 and 365 days." };
+  }
+  if (!Number.isInteger(rollupDays) || rollupDays < 7 || rollupDays > 3650) {
+    return { ok: false, error: "Rollup retention must be between 7 and 3650 days." };
+  }
+  if (rollupDays < rawDays) {
+    return {
+      ok: false,
+      error: "Rollups must be kept at least as long as raw data.",
+    };
+  }
+
   try {
     await saveSettings(
       {
+        retentionRawDays: String(rawDays),
+        retentionRollupDays: String(rollupDays),
         smtpHost: input.smtpHost.trim(),
         smtpPort: input.smtpPort.trim(),
         smtpSecure: input.smtpSecure ? "true" : "false",
@@ -80,6 +99,46 @@ export async function saveAlertSettings(
   console.log(`[settings] ${auth.user.username} updated alerting settings`);
   revalidatePath("/settings");
   return { ok: true, message: "Settings saved." };
+}
+
+/** Runs a retention pass now, so an admin can reclaim space without waiting. */
+export async function runRetentionNow(): Promise<Result> {
+  const auth = await requirePermission("settings:manage");
+  if (!auth.ok) return auth;
+
+  try {
+    const { runRetention } = await import("@/lib/retention");
+    const r = await runRetention();
+    console.log(`[settings] ${auth.user.username} ran retention manually`);
+    return {
+      ok: true,
+      message:
+        `Rolled up ${r.rolledUpDays} host-day(s); pruned ${r.deletedSnapshots} ` +
+        `snapshots, ${r.deletedMetrics} metric samples, ${r.deletedHeartbeats} heartbeats.`,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Triggers a vulnerability scan now rather than waiting for the 6h job. */
+export async function runVulnScanNow(): Promise<Result> {
+  const auth = await requirePermission("settings:manage");
+  if (!auth.ok) return auth;
+
+  try {
+    const { scanFleetForVulnerabilities } = await import("@/lib/vulnerabilities");
+    const r = await scanFleetForVulnerabilities();
+    console.log(`[settings] ${auth.user.username} ran a vulnerability scan manually`);
+    return {
+      ok: true,
+      message:
+        `Scanned ${r.scannedHosts} host(s): ${r.findings} finding(s), ` +
+        `${r.newVulns} new advisor${r.newVulns === 1 ? "y" : "ies"}.`,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** Sends a real email using the saved configuration and reports the result. */

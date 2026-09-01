@@ -133,3 +133,93 @@ describe("parseAgentPayload", () => {
     ).toThrow();
   });
 });
+describe("parseAgentPayload — metrics", () => {
+  const METRICS = {
+    cpu_pct: 12.4,
+    cpu_cores: 4,
+    load1: 0.32,
+    load5: 0.28,
+    load15: 0.19,
+    mem_total_bytes: 8_318_205_952,
+    mem_used_bytes: 3_112_042_496,
+    mem_available_bytes: 5_206_163_456,
+    swap_total_bytes: 2_147_483_648,
+    swap_used_bytes: 0,
+    uptime_seconds: 864_321,
+    process_count: 187,
+    disks: [
+      {
+        mount: "/",
+        fs_type: "ext4",
+        total_bytes: 84_140_818_432,
+        used_bytes: 41_231_048_704,
+        available_bytes: 42_909_769_728,
+        use_pct: 49.0,
+        inode_use_pct: 11,
+      },
+    ],
+  };
+
+  it("accepts a full metrics block", () => {
+    const parsed = parseAgentPayload({ hostname: "web-01", metrics: METRICS });
+    expect(parsed.metrics?.cpu_pct).toBe(12.4);
+    expect(parsed.metrics?.disks).toHaveLength(1);
+    expect(parsed.metrics?.disks?.[0].mount).toBe("/");
+  });
+
+  it("accepts an all-null block from a host without /proc", () => {
+    // The agent degrades to nulls rather than omitting fields when a file is
+    // unreadable; that must not be a 422.
+    const parsed = parseAgentPayload({
+      hostname: "minimal",
+      metrics: {
+        cpu_pct: null,
+        cpu_cores: null,
+        load1: null,
+        load5: null,
+        load15: null,
+        mem_total_bytes: null,
+        mem_used_bytes: null,
+        mem_available_bytes: null,
+        swap_total_bytes: null,
+        swap_used_bytes: null,
+        uptime_seconds: null,
+        process_count: null,
+        disks: [],
+      },
+    });
+    expect(parsed.metrics?.cpu_pct).toBeNull();
+    expect(parsed.metrics?.disks).toEqual([]);
+  });
+
+  it("accepts a payload with no metrics at all (older agent)", () => {
+    // A host still running the pre-metrics agent must keep reporting.
+    const parsed = parseAgentPayload({ hostname: "old-agent" });
+    expect(parsed.metrics).toBeUndefined();
+  });
+
+  it("accepts metrics: null", () => {
+    const parsed = parseAgentPayload({ hostname: "no-proc", metrics: null });
+    expect(parsed.metrics).toBeNull();
+  });
+
+  it("rejects a stringified number (regression guard)", () => {
+    // jq --argjson emits real JSON numbers; quoting them would mean the shell
+    // built the payload wrong, and we want that loud rather than stored as NaN.
+    expect(() =>
+      parseAgentPayload({
+        hostname: "bad",
+        metrics: { cpu_pct: "12.4" as unknown as number },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a disk entry missing its byte counts", () => {
+    expect(() =>
+      parseAgentPayload({
+        hostname: "bad-disk",
+        metrics: { disks: [{ mount: "/", use_pct: 50 } as never] },
+      }),
+    ).toThrow();
+  });
+});

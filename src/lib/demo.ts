@@ -1,6 +1,9 @@
-import { DOWN_MS, STALE_MS } from "./thresholds";
+import { DISK_WARN_PCT, DOWN_MS, STALE_MS } from "./thresholds";
+import type { VulnRow } from "./vulnerabilities";
 import type {
   ContainerRow,
+  MetricPoint,
+  MetricsSnapshot,
   DowntimeEventRow,
   HostDetailData,
   HostSummary,
@@ -231,12 +234,137 @@ function buildEvents(blips: Blip[]): DowntimeEventRow[] {
   }));
 }
 
+/**
+ * Deterministic pseudo-metrics for the demo fleet. Derived from the host id so
+ * the numbers are stable across renders rather than jittering on every reload.
+ */
+function demoMetrics(spec: DemoSpec): MetricsSnapshot {
+  const seed = spec.id;
+  const cpu = 8 + ((seed * 17) % 40);
+  const memTotal = (seed % 2 === 0 ? 8 : 4) * 1024 ** 3;
+  const memUsed = Math.round(memTotal * (0.35 + ((seed * 7) % 30) / 100));
+  // One host is deliberately near-full so the disk warning path is visible.
+  const rootPct = seed === 2 ? 91.4 : 42 + ((seed * 11) % 25);
+  const rootTotal = 80 * 1024 ** 3;
+  const rootUsed = Math.round(rootTotal * (rootPct / 100));
+
+  return {
+    collectedAt: new Date(Date.now() - 60_000).toISOString(),
+    cpuPct: cpu,
+    cpuCores: seed % 2 === 0 ? 4 : 2,
+    load1: Math.round((cpu / 25) * 100) / 100,
+    load5: Math.round((cpu / 28) * 100) / 100,
+    load15: Math.round((cpu / 32) * 100) / 100,
+    memTotalBytes: memTotal,
+    memUsedBytes: memUsed,
+    memAvailableBytes: memTotal - memUsed,
+    memUsedPct: Math.round((memUsed / memTotal) * 1000) / 10,
+    swapTotalBytes: 2 * 1024 ** 3,
+    swapUsedBytes: Math.round(0.05 * 2 * 1024 ** 3),
+    uptimeSeconds: 60 * 60 * 24 * (3 + seed),
+    processCount: 120 + seed * 9,
+    disks: [
+      {
+        mount: "/",
+        fsType: "ext4",
+        totalBytes: rootTotal,
+        usedBytes: rootUsed,
+        availableBytes: rootTotal - rootUsed,
+        usePct: Math.round(rootPct * 10) / 10,
+        inodeUsePct: 12,
+      },
+      {
+        mount: "/var/lib/docker",
+        fsType: "ext4",
+        totalBytes: 40 * 1024 ** 3,
+        usedBytes: Math.round(40 * 1024 ** 3 * 0.55),
+        availableBytes: Math.round(40 * 1024 ** 3 * 0.45),
+        usePct: 55,
+        inodeUsePct: 8,
+      },
+    ],
+  };
+}
+
+/** 24h of pseudo-history, one point every 15 minutes. */
+function demoHistory(spec: DemoSpec): MetricPoint[] {
+  const now = Date.now();
+  const points: MetricPoint[] = [];
+  for (let i = 96; i >= 0; i--) {
+    const t = now - i * 15 * 60_000;
+    const wave = Math.sin((i / 96) * Math.PI * 4 + spec.id);
+    const cpu = Math.max(2, Math.min(95, 25 + wave * 18 + (spec.id * 3) % 10));
+    const mem = Math.max(10, Math.min(95, 48 + wave * 9 + (spec.id * 5) % 8));
+    points.push({
+      t: new Date(t).toISOString(),
+      cpuPct: Math.round(cpu * 10) / 10,
+      memUsedPct: Math.round(mem * 10) / 10,
+      load1: Math.round((cpu / 25) * 100) / 100,
+    });
+  }
+  return points;
+}
+
+/**
+ * Demo vulnerabilities derived from the demo packages already marked as
+ * security updates, so the sample fleet demonstrates the feature without
+ * inventing CVEs for packages that have none.
+ */
+function demoVulns(spec: DemoSpec): VulnRow[] {
+  const seedCves: Record<string, { id: string; severity: VulnRow["severity"]; score: number; summary: string }> = {
+    openssl: {
+      id: "CVE-2024-5535",
+      severity: "HIGH",
+      score: 7.5,
+      summary: "SSL_select_next_proto buffer overread with an empty client list.",
+    },
+    "libssl3": {
+      id: "CVE-2024-4741",
+      severity: "CRITICAL",
+      score: 9.1,
+      summary: "Use-after-free in SSL_free_buffers.",
+    },
+    curl: {
+      id: "CVE-2024-2004",
+      severity: "MEDIUM",
+      score: 5.3,
+      summary: "Usage of disabled protocol when a proxy is configured.",
+    },
+  };
+
+  return spec.packages
+    .filter((p) => p.security)
+    .flatMap((p) => {
+      const cve = seedCves[p.name];
+      if (!cve) return [];
+      return [
+        {
+          id: cve.id,
+          severity: cve.severity,
+          cvssScore: cve.score,
+          summary: cve.summary,
+          aliases: [],
+          packageName: p.name,
+          installedVersion: p.installed,
+          fixedVersion: p.available,
+          firstSeenAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+          publishedAt: new Date(Date.now() - 20 * 86_400_000).toISOString(),
+        },
+      ];
+    });
+}
+
 function summaryFor(spec: DemoSpec): HostSummary {
   const lastSeen = new Date(Date.now() - spec.lastSeenMinutesAgo * 60_000);
   const age = Date.now() - lastSeen.getTime();
   const status = age <= STALE_MS ? "online" : age <= DOWN_MS ? "stale" : "down";
   const outdated = spec.packages.length;
   const security = spec.packages.filter((p) => p.security).length;
+  const metrics = demoMetrics(spec);
+  const maxDisk = metrics.disks.reduce<number | null>(
+    (max, d) => (max === null || d.usePct > max ? d.usePct : max),
+    null,
+  );
   return {
     id: spec.id,
     hostname: spec.hostname,
@@ -250,6 +378,13 @@ function summaryFor(spec: DemoSpec): HostSummary {
     dockerEngineVersion: spec.docker.installed ? spec.docker.engineVersion : null,
     uptimePct30d: computeUptime(spec.blips),
     osLabel: `${spec.osInfo.name} ${spec.osInfo.version}`,
+    cpuPct: metrics.cpuPct,
+    memUsedPct: metrics.memUsedPct,
+    maxDiskUsePct: maxDisk,
+    diskAlert: maxDisk !== null && maxDisk >= DISK_WARN_PCT,
+    vulnCritical: demoVulns(spec).filter((v) => v.severity === "CRITICAL").length,
+    vulnHigh: demoVulns(spec).filter((v) => v.severity === "HIGH").length,
+    vulnTotal: demoVulns(spec).length,
   };
 }
 
@@ -273,5 +408,8 @@ export function getDemoHostDetail(id: number): HostDetailData | null {
     uptimeSeries: buildSeries(spec.blips),
     uptimePct30d: computeUptime(spec.blips),
     downtimeEvents: buildEvents(spec.blips),
+    metrics: demoMetrics(spec),
+    metricHistory: demoHistory(spec),
+    vulnerabilities: demoVulns(spec),
   };
 }

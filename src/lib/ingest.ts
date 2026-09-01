@@ -2,16 +2,19 @@ import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   containers as containersTable,
+  diskUsage as diskUsageTable,
   dockerInfo as dockerInfoTable,
   heartbeats,
+  hostMetrics as hostMetricsTable,
   hosts,
   packages as packagesTable,
   snapshots,
 } from "@/db/schema";
 import { getDb } from "./db";
 import { closeOpenDowntime } from "./downtime";
-import { sendAlertEmail } from "./mail";
+import { dispatchAlert } from "./alerts";
 import { ensureSchema } from "./migrate";
+import { DISK_CRITICAL_PCT, DISK_WARN_PCT } from "./thresholds";
 import type { AgentPackagePayload, AgentPayload } from "./types";
 
 const ingestSchema = z.object({
@@ -67,6 +70,36 @@ const ingestSchema = z.object({
       }),
     )
     .optional(),
+  metrics: z
+    .object({
+      cpu_pct: z.number().nullable().optional(),
+      cpu_cores: z.number().int().nullable().optional(),
+      load1: z.number().nullable().optional(),
+      load5: z.number().nullable().optional(),
+      load15: z.number().nullable().optional(),
+      mem_total_bytes: z.number().nullable().optional(),
+      mem_used_bytes: z.number().nullable().optional(),
+      mem_available_bytes: z.number().nullable().optional(),
+      swap_total_bytes: z.number().nullable().optional(),
+      swap_used_bytes: z.number().nullable().optional(),
+      uptime_seconds: z.number().nullable().optional(),
+      process_count: z.number().int().nullable().optional(),
+      disks: z
+        .array(
+          z.object({
+            mount: z.string().min(1),
+            fs_type: z.string().nullable().optional(),
+            total_bytes: z.number(),
+            used_bytes: z.number(),
+            available_bytes: z.number(),
+            use_pct: z.number(),
+            inode_use_pct: z.number().nullable().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export function parseAgentPayload(raw: unknown): AgentPayload {
@@ -80,6 +113,15 @@ interface IngestResult {
   newUpdates: AgentPackagePayload[];
   dockerDeprecatedNew: boolean;
   recovered: boolean;
+  diskAlerts: DiskAlert[];
+}
+
+/** A mount that has just crossed a usage threshold since the last report. */
+interface DiskAlert {
+  mount: string;
+  usePct: number;
+  level: "warning" | "critical";
+  availableBytes: number;
 }
 
 /** Validates, stores, and returns the normalized payload. */
@@ -209,6 +251,87 @@ export async function processIngest(
       );
     }
 
+    // Resource metrics, plus the per-mount disk rows that hang off them.
+    const diskAlerts: DiskAlert[] = [];
+    if (payload.metrics) {
+      const m = payload.metrics;
+
+      // Previous disk usage, so an alert fires on the *crossing* rather than
+      // on every report — a host parked at 90% must not alert every 5 minutes.
+      const prevUse = new Map<string, number>();
+      const [prevMetric] = await tx
+        .select({ id: hostMetricsTable.id })
+        .from(hostMetricsTable)
+        .where(eq(hostMetricsTable.hostId, hostId))
+        .orderBy(desc(hostMetricsTable.collectedAt))
+        .limit(1);
+      if (prevMetric) {
+        const prevDisks = await tx
+          .select()
+          .from(diskUsageTable)
+          .where(eq(diskUsageTable.metricId, prevMetric.id));
+        for (const d of prevDisks) prevUse.set(d.mount, d.usePct);
+      }
+
+      const [metric] = await tx
+        .insert(hostMetricsTable)
+        .values({
+          hostId,
+          snapshotId,
+          collectedAt,
+          cpuPct: m.cpu_pct ?? null,
+          cpuCores: m.cpu_cores ?? null,
+          load1: m.load1 ?? null,
+          load5: m.load5 ?? null,
+          load15: m.load15 ?? null,
+          memTotalBytes: m.mem_total_bytes ?? null,
+          memUsedBytes: m.mem_used_bytes ?? null,
+          memAvailableBytes: m.mem_available_bytes ?? null,
+          swapTotalBytes: m.swap_total_bytes ?? null,
+          swapUsedBytes: m.swap_used_bytes ?? null,
+          uptimeSeconds: m.uptime_seconds ?? null,
+          processCount: m.process_count ?? null,
+        })
+        .returning({ id: hostMetricsTable.id });
+
+      if (m.disks && m.disks.length > 0) {
+        await tx.insert(diskUsageTable).values(
+          m.disks.map((d) => ({
+            metricId: metric.id,
+            mount: d.mount,
+            fsType: d.fs_type ?? null,
+            totalBytes: d.total_bytes,
+            usedBytes: d.used_bytes,
+            availableBytes: d.available_bytes,
+            usePct: d.use_pct,
+            inodeUsePct: d.inode_use_pct ?? null,
+          })),
+        );
+
+        for (const d of m.disks) {
+          const before = prevUse.get(d.mount);
+          const crossed = (limit: number) =>
+            d.use_pct >= limit && (before === undefined || before < limit);
+
+          if (crossed(DISK_CRITICAL_PCT)) {
+            diskAlerts.push({
+              mount: d.mount,
+              usePct: d.use_pct,
+              level: "critical",
+              availableBytes: d.available_bytes,
+            });
+          } else if (crossed(DISK_WARN_PCT)) {
+            diskAlerts.push({
+              mount: d.mount,
+              usePct: d.use_pct,
+              level: "warning",
+              availableBytes: d.available_bytes,
+            });
+          }
+        }
+      }
+    }
+
     await tx.insert(heartbeats).values({ hostId, receivedAt: now });
 
     // Recovery: close any open downtime event now that the host reported again.
@@ -220,6 +343,7 @@ export async function processIngest(
       newUpdates,
       dockerDeprecatedNew,
       recovered: closed > 0,
+      diskAlerts,
     };
   });
 
@@ -235,52 +359,78 @@ async function sendIngestAlerts(
   payload: AgentPayload,
   result: IngestResult,
 ): Promise<void> {
-  const { newUpdates, dockerDeprecatedNew, recovered } = result;
+  const { hostId, newUpdates, dockerDeprecatedNew, recovered, diskAlerts } = result;
+  const hostname = payload.hostname;
 
   if (recovered) {
-    await sendAlertEmail({
-      subject: `Host recovered: ${payload.hostname}`,
-      text:
-        `Good news — host \`${payload.hostname}\` is reporting again.\n\n` +
-        `Last heartbeat: ${new Date().toISOString()}`,
+    await dispatchAlert({
+      severity: "info",
+      title: `Host recovered: ${hostname}`,
+      body: `${hostname} is reporting again as of ${new Date().toISOString()}.`,
+      hostId,
+      hostname,
+    });
+  }
+
+  // Disk pressure. Fires on a crossing, so at most once per threshold per
+  // mount until usage drops back below it.
+  for (const d of diskAlerts) {
+    const freeGb = (d.availableBytes / 1024 ** 3).toFixed(1);
+    const label = d.level === "critical" ? "CRITICAL" : "Warning";
+    const advice =
+      d.level === "critical"
+        ? "This is close to exhaustion — services will begin failing."
+        : "Plan to free space before it becomes critical.";
+
+    await dispatchAlert({
+      severity: d.level === "critical" ? "critical" : "warning",
+      title: `${label}: disk ${d.usePct.toFixed(0)}% full on ${hostname} (${d.mount})`,
+      body: [
+        `Filesystem ${d.mount} is ${d.usePct.toFixed(1)}% full, with ${freeGb} GB free.`,
+        "",
+        advice,
+      ].join("\n"),
+      hostId,
+      hostname,
     });
   }
 
   // Alert once when new package updates appear (security ones stand out).
   if (newUpdates.length > 0) {
     const securityCount = newUpdates.filter((p) => p.security).length;
-    await sendAlertEmail({
-      subject: `${newUpdates.length} new package update${newUpdates.length === 1 ? "" : "s"} on ${payload.hostname}`,
-      text: formatUpdateEmail(payload.hostname, newUpdates, securityCount),
+    await dispatchAlert({
+      // Security updates warrant a louder channel than routine ones.
+      severity: securityCount > 0 ? "warning" : "info",
+      title: `${newUpdates.length} new package update${newUpdates.length === 1 ? "" : "s"} on ${hostname}`,
+      body: formatUpdateBody(newUpdates, securityCount),
+      hostId,
+      hostname,
     });
   }
 
   // Alert when a host first reports a deprecated Docker engine.
   if (dockerDeprecatedNew && payload.docker) {
-    await sendAlertEmail({
-      subject: `Docker engine deprecated on ${payload.hostname}`,
-      text:
-        `Host \`${payload.hostname}\` is running Docker ` +
-        `${payload.docker.engine_version ?? "unknown"}, which has reached end of life.\n\n` +
-        `Plan an upgrade to a supported engine version.`,
+    await dispatchAlert({
+      severity: "warning",
+      title: `Docker engine deprecated on ${hostname}`,
+      body:
+        `Docker ${payload.docker.engine_version ?? "unknown"} has reached end of life.\n\n` +
+        "Plan an upgrade to a supported engine version.",
+      hostId,
+      hostname,
     });
   }
 }
 
-function formatUpdateEmail(
-  hostname: string,
+function formatUpdateBody(
   updates: AgentPackagePayload[],
   securityCount: number,
 ): string {
   const lines = updates
-    .map((u) => {
-      const sec = u.security ? "  [SECURITY]" : "";
-      return `- ${u.name}: ${u.installed} -> ${u.available}${sec}`;
-    })
+    .map((u) => `- ${u.name}: ${u.installed} -> ${u.available}${u.security ? "  [SECURITY]" : ""}`)
     .join("\n");
   return (
-    `Host \`${hostname}\` has ${updates.length} newly available package update${updates.length === 1 ? "" : "s"}` +
-    `${securityCount > 0 ? ` (${securityCount} security)` : ""}:\n\n${lines}\n\n` +
-    `Review at the Digi Fleet Watch dashboard.`
+    `${updates.length} newly available package update${updates.length === 1 ? "" : "s"}` +
+    `${securityCount > 0 ? ` (${securityCount} security)` : ""}:\n\n${lines}`
   );
 }

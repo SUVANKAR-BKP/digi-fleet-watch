@@ -117,6 +117,141 @@ if command -v apt >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# Resource metrics: CPU, load, memory, uptime, per-mount disk usage.
+#
+# Everything comes from /proc and coreutils, so the agent still needs nothing
+# beyond curl + jq. Values are emitted as JSON numbers or null — never strings.
+# The server's schema rejects the wrong type with HTTP 422.
+# ---------------------------------------------------------------------------
+metrics_json='null'
+disks_json='[]'
+
+# Echoes the argument if it is a non-negative integer, otherwise "null", so a
+# missing /proc file degrades to a null column instead of a 422.
+num_or_null() {
+  case "${1:-}" in
+    '' | *[!0-9]*) printf 'null' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# CPU busy % needs two samples of /proc/stat. The cpu line is
+# user nice system idle iowait irq softirq steal...; idle time is idle+iowait.
+read_cpu() {
+  awk '/^cpu /{ total = 0; for (i = 2; i <= NF; i++) total += $i; print total, $5 + $6; exit }' \
+    /proc/stat 2>/dev/null
+}
+
+cpu_pct='null'
+if [ -r /proc/stat ]; then
+  cpu_first="$(read_cpu)"
+  sleep 1
+  cpu_second="$(read_cpu)"
+  if [ -n "$cpu_first" ] && [ -n "$cpu_second" ]; then
+    cpu_pct="$(awk -v a="$cpu_first" -v b="$cpu_second" 'BEGIN {
+      split(a, x, " "); split(b, y, " ")
+      dt = y[1] - x[1]; di = y[2] - x[2]
+      if (dt <= 0) { print "null" } else { printf "%.1f", (1 - di / dt) * 100 }
+    }')"
+  fi
+fi
+
+cpu_cores="$(num_or_null "$(nproc 2>/dev/null || true)")"
+
+load1='null'; load5='null'; load15='null'; proc_count='null'
+if [ -r /proc/loadavg ]; then
+  read -r la1 la5 la15 procs _rest </proc/loadavg 2>/dev/null || true
+  load1="${la1:-null}"; load5="${la5:-null}"; load15="${la15:-null}"
+  # "running/total" -> total
+  proc_count="$(num_or_null "${procs##*/}")"
+fi
+
+meminfo_kb() {
+  awk -v key="$1" '$1 == key ":" { printf "%d", $2 * 1024; exit }' /proc/meminfo 2>/dev/null
+}
+
+mem_total='null'; mem_avail='null'; mem_used='null'
+swap_total='null'; swap_used='null'
+if [ -r /proc/meminfo ]; then
+  mem_total="$(num_or_null "$(meminfo_kb MemTotal)")"
+  mem_avail="$(num_or_null "$(meminfo_kb MemAvailable)")"
+  swap_total="$(num_or_null "$(meminfo_kb SwapTotal)")"
+  swap_free="$(num_or_null "$(meminfo_kb SwapFree)")"
+  if [ "$mem_total" != "null" ] && [ "$mem_avail" != "null" ]; then
+    mem_used="$((mem_total - mem_avail))"
+  fi
+  if [ "$swap_total" != "null" ] && [ "$swap_free" != "null" ]; then
+    swap_used="$((swap_total - swap_free))"
+  fi
+fi
+
+uptime_s='null'
+if [ -r /proc/uptime ]; then
+  uptime_s="$(num_or_null "$(awk '{printf "%d", $1; exit}' /proc/uptime 2>/dev/null || true)")"
+fi
+
+# Real filesystems only. tmpfs/devtmpfs/overlay/squashfs are volatile or are
+# container layers; reporting them as "95% full" is pure noise.
+dtmp="$(mktemp)"
+if df -PT -B1 >/dev/null 2>&1; then
+  df -PT -B1 2>/dev/null | tail -n +2 |
+    while read -r _fs fstype total used avail _pct mount; do
+      case "$fstype" in
+        tmpfs | devtmpfs | squashfs | overlay | aufs | ramfs | autofs | proc | sysfs | cgroup* | fuse.* | nsfs | tracefs | debugfs | mqueue | hugetlbfs | binfmt_misc | configfs | pstore | securityfs | efivarfs)
+          continue
+          ;;
+      esac
+      case "$total" in '' | *[!0-9]*) continue ;; esac
+      [ "$total" -gt 0 ] || continue
+      inode_pct="$(df -PTi "$mount" 2>/dev/null | tail -n1 | awk '{gsub(/%/, "", $6); print $6}')"
+      inode_pct="$(num_or_null "$inode_pct")"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$mount" "$fstype" "$total" "$used" "$avail" "$inode_pct" >>"$dtmp"
+    done
+fi
+
+if [ -s "$dtmp" ]; then
+  # jq does the JSON quoting, so a mount point with a quote or backslash in it
+  # cannot corrupt the payload.
+  disks_json="$(jq -R -s -c '
+    split("\n") | map(select(length > 0)) | map(split("\t")) |
+    map({
+      mount: .[0],
+      fs_type: .[1],
+      total_bytes: (.[2] | tonumber),
+      used_bytes: (.[3] | tonumber),
+      available_bytes: (.[4] | tonumber),
+      use_pct: (if (.[2] | tonumber) > 0
+                then (((.[3] | tonumber) / (.[2] | tonumber) * 1000) | round / 10)
+                else 0 end),
+      inode_use_pct: (if .[5] == "null" then null else (.[5] | tonumber) end)
+    })
+  ' "$dtmp" 2>/dev/null || echo '[]')"
+fi
+
+metrics_json="$(jq -n \
+  --argjson cpu_pct "$cpu_pct" \
+  --argjson cpu_cores "$cpu_cores" \
+  --argjson load1 "$load1" \
+  --argjson load5 "$load5" \
+  --argjson load15 "$load15" \
+  --argjson mem_total "$mem_total" \
+  --argjson mem_used "$mem_used" \
+  --argjson mem_available "$mem_avail" \
+  --argjson swap_total "$swap_total" \
+  --argjson swap_used "$swap_used" \
+  --argjson uptime_seconds "$uptime_s" \
+  --argjson process_count "$proc_count" \
+  --argjson disks "$disks_json" \
+  '{cpu_pct: $cpu_pct, cpu_cores: $cpu_cores,
+    load1: $load1, load5: $load5, load15: $load15,
+    mem_total_bytes: $mem_total, mem_used_bytes: $mem_used,
+    mem_available_bytes: $mem_available,
+    swap_total_bytes: $swap_total, swap_used_bytes: $swap_used,
+    uptime_seconds: $uptime_seconds, process_count: $process_count,
+    disks: $disks}' 2>/dev/null || echo null)"
+
+# ---------------------------------------------------------------------------
 # Docker (optional): engine version, API version, container counts
 # ---------------------------------------------------------------------------
 docker_json='null'
@@ -246,10 +381,12 @@ payload="$(jq -n \
   --argjson packages "$packages_json" \
   --argjson docker "$docker_json" \
   --argjson containers "$containers_json" \
+  --argjson metrics "$metrics_json" \
   --arg collected "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{hostname:$hostname, label:$label,
     os:{name:$os_name, version:$os_version, kernel:$kernel},
-    packages:$packages, docker:$docker, containers:$containers, collected_at:$collected}')"
+    packages:$packages, docker:$docker, containers:$containers,
+    metrics:$metrics, collected_at:$collected}')"
 
 printf '%s' "$payload" | jq -e . >/dev/null 2>&1 || die "failed to build valid JSON payload"
 
@@ -267,7 +404,7 @@ printf '%s' "$payload" | jq -e '
 resp_body="$(mktemp)"
 # ${ctmp:+...} keeps the container temp file in the cleanup list when the
 # Docker section ran, without tripping `set -u` when it did not.
-trap 'rm -f "$tmp" "$sec_tmp" "$resp_body" ${ctmp:+"$ctmp"}' EXIT
+trap 'rm -f "$tmp" "$sec_tmp" "$resp_body" ${ctmp:+"$ctmp"} ${dtmp:+"$dtmp"}' EXIT
 
 post_once() {
   curl -sS --max-time "$HTTP_TIMEOUT" -o "$resp_body" -w '%{http_code}' \

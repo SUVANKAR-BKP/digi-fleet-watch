@@ -1,15 +1,19 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
+  date,
   doublePrecision,
   index,
   integer,
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
+  unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
@@ -150,6 +154,188 @@ export const containers = pgTable(
   (t) => [index("containers_snapshot_id_idx").on(t.snapshotId)],
 );
 
+/**
+ * Point-in-time resource sample for a host. One row per agent report, pruned
+ * by the retention job and summarised into host_daily_rollup before deletion.
+ */
+export const hostMetrics = pgTable(
+  "host_metrics",
+  {
+    id: serial("id").primaryKey(),
+    hostId: integer("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    snapshotId: integer("snapshot_id").references(() => snapshots.id, {
+      onDelete: "cascade",
+    }),
+    collectedAt: timestamp("collected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    cpuPct: doublePrecision("cpu_pct"),
+    cpuCores: integer("cpu_cores"),
+    load1: doublePrecision("load1"),
+    load5: doublePrecision("load5"),
+    load15: doublePrecision("load15"),
+    // bigint: byte counts exceed a 32-bit int on any modern machine.
+    memTotalBytes: bigint("mem_total_bytes", { mode: "number" }),
+    memUsedBytes: bigint("mem_used_bytes", { mode: "number" }),
+    memAvailableBytes: bigint("mem_available_bytes", { mode: "number" }),
+    swapTotalBytes: bigint("swap_total_bytes", { mode: "number" }),
+    swapUsedBytes: bigint("swap_used_bytes", { mode: "number" }),
+    uptimeSeconds: bigint("uptime_seconds", { mode: "number" }),
+    processCount: integer("process_count"),
+  },
+  (t) => [
+    index("host_metrics_host_time_idx").on(t.hostId, t.collectedAt),
+    index("host_metrics_collected_at_idx").on(t.collectedAt),
+  ],
+);
+
+/** Per-mount disk usage belonging to one metrics sample. */
+export const diskUsage = pgTable(
+  "disk_usage",
+  {
+    id: serial("id").primaryKey(),
+    metricId: integer("metric_id")
+      .notNull()
+      .references(() => hostMetrics.id, { onDelete: "cascade" }),
+    mount: text("mount").notNull(),
+    fsType: text("fs_type"),
+    totalBytes: bigint("total_bytes", { mode: "number" }).notNull(),
+    usedBytes: bigint("used_bytes", { mode: "number" }).notNull(),
+    availableBytes: bigint("available_bytes", { mode: "number" }).notNull(),
+    usePct: doublePrecision("use_pct").notNull(),
+    inodeUsePct: doublePrecision("inode_use_pct"),
+  },
+  (t) => [index("disk_usage_metric_id_idx").on(t.metricId)],
+);
+
+/**
+ * One row per host per day, written before the raw rows for that day are
+ * pruned. This is what makes long-range history affordable.
+ */
+export const hostDailyRollup = pgTable(
+  "host_daily_rollup",
+  {
+    hostId: integer("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    day: date("day").notNull(),
+    uptimePct: doublePrecision("uptime_pct"),
+    downtimeSec: integer("downtime_sec").notNull().default(0),
+    outdatedPackages: integer("outdated_packages"),
+    securityPackages: integer("security_packages"),
+    containersRunning: integer("containers_running"),
+    containersTotal: integer("containers_total"),
+    cpuPctAvg: doublePrecision("cpu_pct_avg"),
+    cpuPctMax: doublePrecision("cpu_pct_max"),
+    memUsedPctAvg: doublePrecision("mem_used_pct_avg"),
+    memUsedPctMax: doublePrecision("mem_used_pct_max"),
+    diskUsePctMax: doublePrecision("disk_use_pct_max"),
+    sampleCount: integer("sample_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.hostId, t.day] }),
+    index("host_daily_rollup_day_idx").on(t.day),
+  ],
+);
+
+/** A vulnerability record fetched from OSV.dev, cached locally. */
+export const vulnerabilities = pgTable(
+  "vulnerabilities",
+  {
+    id: text("id").primaryKey(),
+    summary: text("summary"),
+    details: text("details"),
+    severity: text("severity").notNull().default("UNKNOWN"),
+    cvssScore: doublePrecision("cvss_score"),
+    aliases: text("aliases").array().notNull().default([]),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    modifiedAt: timestamp("modified_at", { withTimezone: true }),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("vulnerabilities_severity_idx").on(t.severity)],
+);
+
+/**
+ * Which hosts are exposed to which vulnerability.
+ *
+ * Keyed on the host, not on a package row: package rows belong to a snapshot
+ * and get pruned by retention, but this exposure record must outlive them.
+ */
+export const hostVulnerabilities = pgTable(
+  "host_vulnerabilities",
+  {
+    id: serial("id").primaryKey(),
+    hostId: integer("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    vulnId: text("vuln_id")
+      .notNull()
+      .references(() => vulnerabilities.id, { onDelete: "cascade" }),
+    packageName: text("package_name").notNull(),
+    installedVersion: text("installed_version").notNull(),
+    fixedVersion: text("fixed_version"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("host_vulnerabilities_unique").on(t.hostId, t.vulnId, t.packageName),
+    index("host_vulnerabilities_host_idx").on(t.hostId),
+    index("host_vulnerabilities_vuln_idx").on(t.vulnId),
+  ],
+);
+
+/**
+ * A maintenance window during which alerts are suppressed.
+ * A null hostId silences the whole fleet.
+ */
+export const alertSilences = pgTable(
+  "alert_silences",
+  {
+    id: serial("id").primaryKey(),
+    hostId: integer("host_id").references(() => hosts.id, { onDelete: "cascade" }),
+    reason: text("reason"),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull().defaultNow(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("alert_silences_window_idx").on(t.endsAt, t.hostId)],
+);
+
+/** Where alerts are delivered. `target` is encrypted at rest. */
+export const notificationChannels = pgTable(
+  "notification_channels",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    type: text("type").notNull(),
+    target: text("target").notNull(),
+    minSeverity: text("min_severity").notNull().default("info"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastError: text("last_error"),
+    lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+  },
+  (t) => [index("notification_channels_enabled_idx").on(t.enabled)],
+);
+
 export const heartbeats = pgTable(
   "heartbeats",
   {
@@ -219,6 +405,13 @@ export const downtimeEventsRelations = relations(downtimeEvents, ({ one }) => ({
   host: one(hosts, { fields: [downtimeEvents.hostId], references: [hosts.id] }),
 }));
 
+export type AlertSilence = typeof alertSilences.$inferSelect;
+export type NotificationChannel = typeof notificationChannels.$inferSelect;
+export type Vulnerability = typeof vulnerabilities.$inferSelect;
+export type HostVulnerability = typeof hostVulnerabilities.$inferSelect;
+export type HostDailyRollup = typeof hostDailyRollup.$inferSelect;
+export type HostMetric = typeof hostMetrics.$inferSelect;
+export type DiskUsage = typeof diskUsage.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type UserRole = User["role"];
