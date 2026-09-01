@@ -49,12 +49,37 @@ install -d "$ENV_DIR"
 curl -fsSL "$FLEETWATCH_URL/agent.sh" -o "$FLEETWATCH_DIR/agent.sh"
 chmod 0755 "$FLEETWATCH_DIR/agent.sh"
 
-# 4. Configuration (mode 600, secret material)
-cat >"$ENV_DIR/agent.env" <<EOF
-FLEETWATCH_URL=$FLEETWATCH_URL
-AGENT_API_TOKEN=$AGENT_API_TOKEN
-FLEETWATCH_LABEL=$FLEETWATCH_LABEL
-EOF
+# 4. Configuration (secret material; permissions set below)
+#
+# Values are single-quoted because agent.sh *sources* this file. An unquoted
+# label containing a space (`FLEETWATCH_LABEL=Own server`) makes bash try to
+# run `server`, print "command not found", and leave the label empty — and a
+# label containing `;` or `$(...)` would simply execute.
+#
+# The label is operator-supplied, so it is reduced to an allowlist first:
+# letters, digits, space, dot, underscore and hyphen. That is everything a
+# human-readable name needs, and it guarantees no quote survives to terminate
+# the quoting below. An allowlist is used rather than escaping because
+# systemd's EnvironmentFile parser does not understand the shell's '\'' idiom,
+# so the two readers of this file would otherwise disagree.
+# Mirrors sanitizeLabel() in src/lib/install-command.ts step for step, so the
+# label shown in the Add Host dialog is exactly what ends up on the host:
+# whitespace to spaces first (filtering first would weld "a\n\nb" into "ab"),
+# then the allowlist, then squeeze and trim.
+FLEETWATCH_LABEL="$(
+  printf '%s' "$FLEETWATCH_LABEL" |
+    tr '\n\r\t' '   ' |
+    tr -cd '[:alnum:] ._-' |
+    tr -s ' ' |
+    cut -c1-200 |
+    sed 's/^ *//; s/ *$//'
+)"
+
+{
+  printf "FLEETWATCH_URL='%s'\n" "$FLEETWATCH_URL"
+  printf "AGENT_API_TOKEN='%s'\n" "$AGENT_API_TOKEN"
+  printf "FLEETWATCH_LABEL='%s'\n" "$FLEETWATCH_LABEL"
+} >"$ENV_DIR/agent.env"
 # systemd reads EnvironmentFile as root before dropping to User=fleetwatch, so
 # root:root 0600 was enough for the timer — but a manual
 # `sudo -u fleetwatch .../agent.sh` run reads the file as the agent user and
