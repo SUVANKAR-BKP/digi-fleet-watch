@@ -34,8 +34,8 @@ const PUBLIC_PATHS = new Set([
   "/api/jobs/check-downtime",
 ]);
 
-/** Routes that additionally require a specific permission. */
-const ADMIN_PATH_PREFIX = "/users";
+/** Routes that additionally require the admin role. */
+const ADMIN_PATH_PREFIXES = ["/users", "/settings"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PATHS.has(pathname)) return true;
@@ -64,7 +64,10 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(login);
   }
 
-  if (pathname === ADMIN_PATH_PREFIX || pathname.startsWith(`${ADMIN_PATH_PREFIX}/`)) {
+  const needsAdmin = ADMIN_PATH_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+  if (needsAdmin) {
     if (!can(session.role, "users:manage")) {
       if (pathname.startsWith("/api/")) {
         return NextResponse.json({ error: "forbidden" }, { status: 403 });

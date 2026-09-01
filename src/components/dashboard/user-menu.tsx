@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LogOut, ShieldCheck, User as UserIcon, Users } from "lucide-react";
+import { LogOut, Settings, ShieldCheck, User as UserIcon, Users } from "lucide-react";
 import { logout } from "@/app/login/actions";
 import {
   DropdownMenu,
@@ -47,6 +47,15 @@ export function UserMenu({
             <Link href="/users" className="cursor-pointer gap-2">
               <Users className="h-3.5 w-3.5" />
               Manage users
+            </Link>
+          </DropdownMenuItem>
+        )}
+
+        {can(role, "settings:manage") && (
+          <DropdownMenuItem asChild>
+            <Link href="/settings" className="cursor-pointer gap-2">
+              <Settings className="h-3.5 w-3.5" />
+              Alert settings
             </Link>
           </DropdownMenuItem>
         )}

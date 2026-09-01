@@ -31,7 +31,8 @@
 - **Uptime & downtime** — 30-day uptime chart and a host's full downtime
   history.
 - **Alerting** — Slack webhooks and/or SMTP emails for downtime, new package
-  updates, and deprecated engines.
+  updates, and deprecated engines, configurable from the dashboard with test
+  buttons; secrets encrypted at rest.
 - **Self-hosted** — Next.js + PostgreSQL 16 run side by side in Docker
   Compose; no external services.
 - **One-liner onboarding** — add any host by pasting a single
@@ -314,19 +315,20 @@ password so you are not locked out. Remove it once you have signed in.
 
 ### Roles
 
-| Role | View hosts | Add hosts / read agent token | Delete hosts | Manage users |
-| ---- | :--------: | :--------------------------: | :----------: | :----------: |
-| **Admin** | ✓ | ✓ | ✓ | ✓ |
-| **Operator** | ✓ | ✓ | ✓ | — |
-| **Viewer** | ✓ | — | — | — |
+| Role | View hosts | Add hosts / read agent token | Delete hosts | Manage users | Alert settings |
+| ---- | :--------: | :--------------------------: | :----------: | :----------: | :------------: |
+| **Admin** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Operator** | ✓ | ✓ | ✓ | — | — |
+| **Viewer** | ✓ | — | — | — | — |
 
 The **+ Add Host** button is hidden from viewers on purpose: the token it hands
 out authenticates `POST /api/ingest`, so anyone holding it can post arbitrary
 data as any host. A read-only account must not be able to read it.
 
 Admins manage accounts at **/users** — create users, change roles, disable an
-account without deleting its history, reset a password, or remove it entirely.
-Everyone can change their own password at **/account**.
+account without deleting its history, reset a password, or remove it entirely —
+and alerting at **/settings**. Everyone can change their own password at
+**/account**.
 
 The last active admin cannot be demoted, disabled or deleted, so an instance can
 never end up with nobody able to manage it.
@@ -404,6 +406,7 @@ snapshots are simply absent for containerized hosts.
 | `/uninstall.sh`             | GET    | public       | Removes the agent from a host (schedule, files, stored token) |
 | `/login` · `/setup`         | GET    | public       | Sign-in, and first-run admin creation while no account exists |
 | `/users`                    | GET    | admin        | Account management |
+| `/settings`                 | GET    | admin        | Alerting configuration (SMTP, Slack) |
 | `/account`                  | GET    | session¹     | Change your own password |
 | `/agent.sh`                 | GET    | public       | Agent collector script, downloaded by the installer |
 | `/digi-fleet-watch.service` | GET    | public       | Systemd unit, downloaded by the installer |
@@ -426,14 +429,34 @@ role. Agent- and probe-facing routes are never session-gated — they use
 The downtime scan runs on every dashboard/API load, so **no separate worker is
 required**. For extra resilience, point a cron at the watchdog endpoint (below).
 
+### Configure from the dashboard (recommended)
+
+Admins configure alerting at **/settings** (user menu → *Alert settings*) — SMTP
+host, credentials, recipient, and the Slack webhook — with **Send test email**
+and **Send test message** buttons that report the real outcome rather than
+failing silently at 3am.
+
+Values saved there are stored in the database and **override the matching
+environment variables**; clear a field to fall back to `.env`. Each field shows
+where its current value comes from (*set here* / *from .env*).
+
+The SMTP password and Slack webhook are **encrypted at rest** (AES-256-GCM,
+under a key derived from `FLEETWATCH_SESSION_SECRET`) and are never sent back
+to the browser — the form only reports whether one is stored. Set that variable
+before saving secrets, or the settings page will say so and refuse.
+
+> Rotating `FLEETWATCH_SESSION_SECRET` makes previously stored secrets
+> undecryptable. That degrades to "alerting unconfigured" with a log line
+> rather than an error — just re-enter them at /settings.
+
 ### Slack (optional)
 
-Set `SLACK_WEBHOOK_URL` in `.env`. A message is posted whenever a host goes
-**down**.
+Set the webhook at **/settings**, or `SLACK_WEBHOOK_URL` in `.env`. A message is
+posted whenever a host goes **down**.
 
 ### Email (optional, SMTP)
 
-Set the following in `.env` to receive email alerts:
+Set these at **/settings**, or in `.env` as the fallback:
 
 ```env
 SMTP_HOST=smtp.example.com
@@ -445,7 +468,7 @@ MAIL_FROM="Digi Fleet Watch <alerts@example.com>"
 ALERT_EMAIL_TO=ops@example.com
 ```
 
-Leave `SMTP_HOST` empty to disable email. Emails are sent for:
+Leave the SMTP host empty (in both places) to disable email. Emails are sent for:
 
 - a host going **down** and coming back **up**,
 - **new package updates** on a host (security updates flagged `[SECURITY]`),
@@ -532,7 +555,8 @@ fails locally with a clear message instead of as an opaque remote 422.
 │   ├── instrumentation.ts  # start-up hook → migrations + first-admin seed
 │   ├── middleware.ts       # session + role gate
 │   └── lib/                # db client, migrations, downtime logic, alerts,
-│                           # rbac.ts, session.ts, password.ts, users.ts
+│                           # rbac.ts, session.ts, password.ts, users.ts,
+│                           # settings.ts, secrets.ts
 ├── scripts/
 │   └── rotate-agent-token.sh  # zero-downtime AGENT_API_TOKEN rotation
 ├── docker-compose.yml      # app + Postgres 16

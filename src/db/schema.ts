@@ -41,6 +41,21 @@ export const users = pgTable(
   ],
 );
 
+/**
+ * Runtime configuration an admin can edit from the dashboard (alerting, for
+ * now). Values marked `isSecret` are encrypted at rest and never returned to
+ * the browser — see src/lib/secrets.ts and src/lib/settings.ts.
+ */
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value"),
+  isSecret: boolean("is_secret").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedBy: text("updated_by"),
+});
+
 export const hosts = pgTable(
   "hosts",
   {
@@ -204,6 +219,7 @@ export const downtimeEventsRelations = relations(downtimeEvents, ({ one }) => ({
   host: one(hosts, { fields: [downtimeEvents.hostId], references: [hosts.id] }),
 }));
 
+export type Setting = typeof settings.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type UserRole = User["role"];
 export type Host = typeof hosts.$inferSelect;

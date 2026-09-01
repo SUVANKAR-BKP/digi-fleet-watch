@@ -19,11 +19,19 @@ export type Permission =
   /** Delete a host and its history. */
   | "hosts:delete"
   /** Create, edit, deactivate and remove dashboard accounts. */
-  | "users:manage";
+  | "users:manage"
+  /** Configure alerting (SMTP, Slack) from the dashboard. */
+  | "settings:manage";
 
 const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
   // Everything, including handing out access to other people.
-  admin: ["hosts:read", "hosts:enroll", "hosts:delete", "users:manage"],
+  admin: [
+    "hosts:read",
+    "hosts:enroll",
+    "hosts:delete",
+    "users:manage",
+    "settings:manage",
+  ],
   // Day-to-day fleet work: add and retire hosts, but not manage accounts.
   operator: ["hosts:read", "hosts:enroll", "hosts:delete"],
   // Read-only. Notably cannot read the agent token, which would otherwise let
@@ -38,7 +46,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 };
 
 export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
-  admin: "Full access, including managing users.",
+  admin: "Full access, including users and alerting settings.",
   operator: "Add and remove hosts. Cannot manage users.",
   viewer: "Read-only. Cannot see the agent token or delete hosts.",
 };
