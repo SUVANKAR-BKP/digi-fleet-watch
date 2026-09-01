@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
+import { Logo } from "@/components/dashboard/logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Logo } from "@/components/dashboard/logo";
-import { authConfigured } from "@/lib/dashboard-auth";
+import { countUsers } from "@/lib/users";
 import { login } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +14,16 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ error?: string; next?: string }>;
 }) {
-  // With no password configured there is no gate, so there is nothing to show.
-  if (!authConfigured()) redirect("/");
+  // Middleware cannot query the database from the edge runtime, so the
+  // "no accounts yet" redirect happens here instead.
+  let hasUsers = true;
+  let dbError: string | null = null;
+  try {
+    hasUsers = (await countUsers()) > 0;
+  } catch (err) {
+    dbError = err instanceof Error ? err.message : String(err);
+  }
+  if (!dbError && !hasUsers) redirect("/setup");
 
   const { error, next } = await searchParams;
 
@@ -28,36 +36,56 @@ export default async function LoginPage({
         </span>
       </div>
 
-      <form action={login} className="space-y-3 rounded-lg border border-border bg-card p-4">
-        <div className="space-y-1.5">
-          <label htmlFor="password" className="text-xs font-medium text-foreground">
-            Dashboard password
-          </label>
-          <Input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            autoFocus
-            required
-          />
+      {dbError ? (
+        <div className="rounded-lg border border-down/40 bg-down/10 p-3 text-xs text-down">
+          <p className="font-semibold">Cannot reach the database.</p>
+          <p className="mt-1 text-muted-foreground">
+            Sign-in is unavailable until Postgres is back.
+          </p>
+          <pre className="mt-2 overflow-x-auto font-mono text-[11px]">{dbError}</pre>
         </div>
+      ) : (
+        <form
+          action={login}
+          className="space-y-3 rounded-lg border border-border bg-card p-4"
+        >
+          <div className="space-y-1.5">
+            <label htmlFor="username" className="text-xs font-medium text-foreground">
+              Username
+            </label>
+            <Input
+              id="username"
+              name="username"
+              autoComplete="username"
+              autoFocus
+              required
+            />
+          </div>
 
-        <input type="hidden" name="next" value={next ?? "/"} />
+          <div className="space-y-1.5">
+            <label htmlFor="password" className="text-xs font-medium text-foreground">
+              Password
+            </label>
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              required
+            />
+          </div>
 
-        {error ? (
-          <p className="text-xs text-down">Incorrect password.</p>
-        ) : null}
+          <input type="hidden" name="next" value={next ?? "/"} />
 
-        <Button type="submit" className="w-full">
-          Sign in
-        </Button>
-      </form>
+          {error ? (
+            <p className="text-xs text-down">Incorrect username or password.</p>
+          ) : null}
 
-      <p className="mt-3 text-[11px] text-muted-foreground">
-        This password is set with <code>FLEETWATCH_DASHBOARD_PASSWORD</code> on
-        the server.
-      </p>
+          <Button type="submit" className="w-full">
+            Sign in
+          </Button>
+        </form>
+      )}
     </div>
   );
 }

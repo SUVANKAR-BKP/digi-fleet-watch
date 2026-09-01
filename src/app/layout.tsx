@@ -4,7 +4,10 @@ import Link from "next/link";
 import "./globals.css";
 import { AddHostDialog } from "@/components/dashboard/add-host-dialog";
 import { Logo } from "@/components/dashboard/logo";
+import { UserMenu } from "@/components/dashboard/user-menu";
+import { getCurrentUser } from "@/lib/auth-server";
 import { getInstallContext } from "@/lib/install-context";
+import { can } from "@/lib/rbac";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,7 +33,10 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const { baseUrl, authConfigured, tokenConfigured } = await getInstallContext();
+  const { baseUrl, tokenConfigured } = await getInstallContext();
+  // Null on /login and /setup, which render inside this layout before anyone
+  // is signed in.
+  const user = await getCurrentUser();
 
   return (
     <html lang="en" className="dark">
@@ -48,22 +54,32 @@ export default async function RootLayout({
             <span className="hidden rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground sm:inline">
               self-hosted
             </span>
+
             <div className="ml-auto flex items-center gap-2">
-              <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:inline-flex">
-                <span className="h-1.5 w-1.5 rounded-full bg-ok" />
-                heartbeat every 5 min
-              </span>
-              <AddHostDialog
-                baseUrl={baseUrl}
-                authConfigured={authConfigured}
-                tokenConfigured={tokenConfigured}
-              />
-              <Link
-                href="/"
-                className="rounded-md border border-border bg-secondary px-2.5 py-1 font-medium text-secondary-foreground transition-colors hover:border-primary/40 hover:text-primary"
-              >
-                Overview
-              </Link>
+              {user ? (
+                <>
+                  <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:inline-flex">
+                    <span className="h-1.5 w-1.5 rounded-full bg-ok" />
+                    heartbeat every 5 min
+                  </span>
+
+                  {can(user.role, "hosts:enroll") && (
+                    <AddHostDialog
+                      baseUrl={baseUrl}
+                      tokenConfigured={tokenConfigured}
+                    />
+                  )}
+
+                  <Link
+                    href="/"
+                    className="rounded-md border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    Overview
+                  </Link>
+
+                  <UserMenu username={user.username} role={user.role} />
+                </>
+              ) : null}
             </div>
           </div>
         </header>

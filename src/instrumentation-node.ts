@@ -24,6 +24,20 @@ export async function registerNode(): Promise<void> {
       if (applied.length > 0) {
         console.log(`[startup] applied ${applied.length} migration(s)`);
       }
+
+      // Create the first admin from the environment when the instance has no
+      // accounts. A no-op once anyone exists, so it cannot resurrect a deleted
+      // admin. With nothing configured the operator uses /setup instead.
+      const { seedInitialAdmin } = await import("./lib/users");
+      const seeded = await seedInitialAdmin();
+      if (!seeded) {
+        const { countUsers } = await import("./lib/users");
+        if ((await countUsers()) === 0) {
+          console.warn(
+            "[startup] no dashboard accounts exist — open /setup to create the first admin",
+          );
+        }
+      }
       return;
     } catch (err) {
       const message = (err as Error).message;

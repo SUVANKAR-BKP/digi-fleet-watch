@@ -1,29 +1,20 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { cookies } from "next/headers";
-import {
-  SESSION_COOKIE,
-  authConfigured,
-  verifySession,
-} from "@/lib/dashboard-auth";
+import { requirePermission } from "@/lib/auth-server";
 import { deleteHost } from "@/lib/data";
 
 /**
  * Removes a host and all of its recorded history.
  *
- * Re-checks the session here rather than relying on middleware alone: this is
- * a destructive action, and defence in depth is cheap.
+ * Re-checks the permission here rather than relying on middleware alone: server
+ * actions are separately reachable, and this is destructive.
  */
 export async function removeHost(
   id: number,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (authConfigured()) {
-    const ok = await verifySession((await cookies()).get(SESSION_COOKIE)?.value);
-    if (!ok) {
-      return { ok: false, error: "Your session expired — reload and sign in again." };
-    }
-  }
+  const auth = await requirePermission("hosts:delete");
+  if (!auth.ok) return { ok: false, error: auth.error };
 
   if (!Number.isInteger(id) || id <= 0) {
     return { ok: false, error: "Invalid host id." };
@@ -36,6 +27,7 @@ export async function removeHost(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 
+  console.log(`[hosts] ${auth.user.username} deleted host ${id}`);
   revalidatePath("/");
   return { ok: true };
 }

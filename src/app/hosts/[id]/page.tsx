@@ -1,8 +1,10 @@
 import { AlertTriangle } from "lucide-react";
 import { notFound } from "next/navigation";
 import { HostDetail } from "@/components/dashboard/host-detail";
+import { getCurrentUser } from "@/lib/auth-server";
 import { getHostDetail } from "@/lib/data";
 import { resolveBaseUrl } from "@/lib/install-context";
+import { can } from "@/lib/rbac";
 import type { HostDetailData } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +29,15 @@ export default async function HostPage({
 
   if (!data) notFound();
 
-  return <HostDetail data={data} baseUrl={await resolveBaseUrl()} />;
+  const user = await getCurrentUser();
+
+  return (
+    <HostDetail
+      data={data}
+      baseUrl={await resolveBaseUrl()}
+      canDelete={can(user?.role, "hosts:delete")}
+    />
+  );
 }
 
 function HostLoadError({ message }: { message: string }) {

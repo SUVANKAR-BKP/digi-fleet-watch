@@ -19,10 +19,13 @@ import { UptimeChart } from "./uptime-chart";
 export function HostDetail({
   data,
   baseUrl,
+  canDelete,
 }: {
   data: HostDetailData;
   /** Used to build the agent uninstall command shown when removing the host. */
   baseUrl: string;
+  /** Viewers may read this page but not retire the host. */
+  canDelete: boolean;
 }) {
   const { summary: h, os, docker, packages, containers, uptimeSeries, uptimePct30d } = data;
   const updates = packages.filter((p) => p.available).length;
@@ -72,7 +75,7 @@ export function HostDetail({
           </div>
         </div>
 
-        {!data.demo && (
+        {!data.demo && canDelete && (
           <DeleteHostButton
             hostId={h.id}
             hostname={h.hostname}

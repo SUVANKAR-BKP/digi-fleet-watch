@@ -1,5 +1,4 @@
 import { headers } from "next/headers";
-import { authConfigured } from "./dashboard-auth";
 
 /**
  * Resolves the external base URL used in the generated install command.
@@ -26,16 +25,14 @@ export async function resolveBaseUrl(): Promise<string> {
  * Deliberately does **not** include AGENT_API_TOKEN: this is consumed by the
  * root layout, so anything returned here is serialised into the HTML of every
  * page. The dialog asks for the token through the `getInstallToken` server
- * action once the operator opens it.
+ * action, which checks the caller's role first.
  */
 export async function getInstallContext(): Promise<{
   baseUrl: string;
-  authConfigured: boolean;
   tokenConfigured: boolean;
 }> {
   return {
     baseUrl: await resolveBaseUrl(),
-    authConfigured: authConfigured(),
     tokenConfigured: Boolean(process.env.AGENT_API_TOKEN),
   };
 }

@@ -9,7 +9,6 @@ import {
   EyeOff,
   Loader2,
   Plus,
-  ShieldAlert,
 } from "lucide-react";
 import { getInstallToken } from "@/app/actions/install";
 import { Button } from "@/components/ui/button";
@@ -27,11 +26,9 @@ import { cn } from "@/lib/utils";
 
 export function AddHostDialog({
   baseUrl,
-  authConfigured,
   tokenConfigured,
 }: {
   baseUrl: string;
-  authConfigured: boolean;
   tokenConfigured: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -107,17 +104,6 @@ export function AddHostDialog({
         </DialogHeader>
 
         <div className="space-y-4 pt-2">
-          {!authConfigured && (
-            <div className="flex gap-2 rounded-lg border border-security/40 bg-security/10 p-2.5 text-[11px] leading-4 text-security">
-              <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" />
-              <span>
-                <strong>This instance has no password.</strong> Anyone who can
-                reach {baseUrl} can open this dialog and read the agent token.
-                Set <code>FLEETWATCH_DASHBOARD_PASSWORD</code> on the server, or
-                keep the port firewalled.
-              </span>
-            </div>
-          )}
 
           {!tokenConfigured && (
             <div className="flex gap-2 rounded-lg border border-down/40 bg-down/10 p-2.5 text-[11px] leading-4 text-down">

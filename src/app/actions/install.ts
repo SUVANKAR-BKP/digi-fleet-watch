@@ -1,11 +1,6 @@
 "use server";
 
-import { cookies } from "next/headers";
-import {
-  SESSION_COOKIE,
-  authConfigured,
-  verifySession,
-} from "@/lib/dashboard-auth";
+import { requirePermission } from "@/lib/auth-server";
 
 /**
  * Hands the agent enrolment token to the Add Host dialog on demand.
@@ -13,19 +8,18 @@ import {
  * The token used to be a prop on a client component rendered by the root
  * layout, which meant every page — including one fetched by an anonymous
  * crawler — carried the secret in its RSC payload. Fetching it from an action
- * keeps it out of the served HTML entirely, and lets the session be re-checked
- * at the moment it is actually requested.
+ * keeps it out of the served HTML entirely, and lets permission be checked at
+ * the moment it is actually requested.
+ *
+ * Gated on `hosts:enroll`: the token lets its holder post data as any host, so
+ * a viewer must not be able to read it.
  */
 export async function getInstallToken(): Promise<{
   token: string;
   error?: string;
 }> {
-  if (authConfigured()) {
-    const ok = await verifySession((await cookies()).get(SESSION_COOKIE)?.value);
-    if (!ok) {
-      return { token: "", error: "Your session expired — reload and sign in again." };
-    }
-  }
+  const auth = await requirePermission("hosts:enroll");
+  if (!auth.ok) return { token: "", error: auth.error };
 
   const token = process.env.AGENT_API_TOKEN ?? "";
   if (!token) {

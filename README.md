@@ -44,8 +44,8 @@
 - **Self-migrating schema** — SQL migrations are applied on start-up and
   tracked in a ledger table, so upgrading an existing deployment never needs a
   manual `psql` step.
-- **Optional password gate** — one env var puts the dashboard, its read APIs
-  and the agent token behind a login.
+- **Accounts and roles** — named sign-ins with three roles (admin / operator /
+  viewer), scrypt-hashed passwords, and a first-run setup flow.
 - **Clean decommissioning** — remove a host and its whole history from the
   dashboard, with a one-liner that uninstalls the agent so it stays gone.
 
@@ -66,8 +66,9 @@ cp .env.example .env
 nano .env
 #   POSTGRES_PASSWORD      → pick a strong password
 #   AGENT_API_TOKEN        → openssl rand -hex 32
-#   FLEETWATCH_DASHBOARD_PASSWORD → strongly recommended; gates the dashboard
-#                            and the Add Host token behind a login
+#   FLEETWATCH_SESSION_SECRET → openssl rand -hex 32 (signs session cookies)
+#   FLEETWATCH_ADMIN_USER / _PASSWORD → optional; creates the first admin
+#                            non-interactively instead of using /setup
 #   SLACK_WEBHOOK_URL      → optional, for Slack downtime alerts
 #   SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO  → optional, for email alerts
 #   PUBLIC_FLEETWATCH_URL  → optional; override the URL shown in "Add Host"
@@ -100,14 +101,13 @@ curl http://localhost:3000/api/health   # {"ok":true}
 - Stop everything: `docker compose down` · wipe all data:
   `docker compose down -v`
 
-> **Security — read this before exposing the dashboard.** The **+ Add Host**
-> dialog hands out `AGENT_API_TOKEN`, the secret agents use to post data. Set
-> `FLEETWATCH_DASHBOARD_PASSWORD` in `.env` to require a login for the
-> dashboard, the read APIs and that token. Leave it empty and **anyone who can
-> reach the instance can read the token and post fake data for any host** —
-> only acceptable on a network you fully trust. Agent routes (`/api/ingest`,
-> `/install.sh`, `/agent.sh`) are never password-gated; they authenticate with
-> the bearer token instead.
+> **Security — read this before exposing the dashboard.** The dashboard
+> requires a signed-in account. On a fresh instance it redirects to `/setup` so
+> you can create the first **admin**; until you do, anyone who can reach the
+> page can claim that account, so complete setup immediately (or keep the port
+> firewalled until you have). Agent routes (`/api/ingest`, `/install.sh`,
+> `/agent.sh`) are never session-gated — they authenticate with
+> `AGENT_API_TOKEN` instead.
 
 ### Option B — local development (no Docker)
 
@@ -245,9 +245,8 @@ Scriptable equivalent of the dashboard button:
 curl -X DELETE http://<YOUR_SERVER_HOST>:3000/api/hosts/<id>
 ```
 
-> Deletion is protected by the same dashboard session as the read APIs — which
-> means it is only actually protected when `FLEETWATCH_DASHBOARD_PASSWORD` is
-> set. Another reason to set it.
+> Deleting a host requires the **admin** or **operator** role; viewers cannot
+> see the button and the server action refuses them.
 
 ### Rotating the agent token
 
@@ -291,6 +290,68 @@ agent reports two practical proxies for drift risk:
 
 Registry-diff detection (`docker manifest inspect` / registry API) is a noted
 possible future enhancement — we deliberately don't fake registry data.
+
+## Accounts and roles
+
+The dashboard requires a signed-in account. Passwords are hashed with **scrypt**
+(memory-hard, and built into Node, so the Alpine image needs no bcrypt/argon2
+toolchain); the session is a signed, HttpOnly cookie carrying the user id and
+role.
+
+### First run
+
+Open the app. With no accounts it redirects to **`/setup`**, which creates the
+first **admin** and signs you in. That page stops working the moment one account
+exists, so it cannot be used to mint a second admin.
+
+For automated deploys, set `FLEETWATCH_ADMIN_USER` and
+`FLEETWATCH_ADMIN_PASSWORD` instead — the admin is created on start-up and
+`/setup` never opens. Both are ignored once any account exists.
+
+Upgrading from the old shared password? Leave `FLEETWATCH_DASHBOARD_PASSWORD`
+in place for one boot: it is converted into an `admin` account with that
+password so you are not locked out. Remove it once you have signed in.
+
+### Roles
+
+| Role | View hosts | Add hosts / read agent token | Delete hosts | Manage users |
+| ---- | :--------: | :--------------------------: | :----------: | :----------: |
+| **Admin** | ✓ | ✓ | ✓ | ✓ |
+| **Operator** | ✓ | ✓ | ✓ | — |
+| **Viewer** | ✓ | — | — | — |
+
+The **+ Add Host** button is hidden from viewers on purpose: the token it hands
+out authenticates `POST /api/ingest`, so anyone holding it can post arbitrary
+data as any host. A read-only account must not be able to read it.
+
+Admins manage accounts at **/users** — create users, change roles, disable an
+account without deleting its history, reset a password, or remove it entirely.
+Everyone can change their own password at **/account**.
+
+The last active admin cannot be demoted, disabled or deleted, so an instance can
+never end up with nobody able to manage it.
+
+### How enforcement works
+
+Three layers, because each alone has a gap:
+
+1. **Middleware** (edge runtime) checks the signed cookie and redirects
+   anonymous requests to `/login`. It cannot query Postgres, so this is coarse
+   routing only.
+2. **Pages and server actions** re-read the *live* user row via
+   `getCurrentUser()`. The role is baked into the cookie at sign-in, so without
+   this a demoted or disabled user would keep their old access until the cookie
+   expired.
+3. **Server actions** additionally assert the specific permission
+   (`requirePermission("hosts:delete")` and friends) — actions are reachable
+   independently of the page that renders them, so they must not trust
+   middleware.
+
+Sessions last 7 days and are signed with `FLEETWATCH_SESSION_SECRET`. If that is
+unset, `AGENT_API_TOKEN` is used instead — which means rotating the agent token
+also signs everyone out. Set it explicitly to avoid that coupling.
+
+---
 
 ## Containerized agent (container-only hosts)
 
@@ -341,12 +402,16 @@ snapshots are simply absent for containerized hosts.
 | `/api/health`               | GET    | —            | Container liveness probe |
 | `/install.sh`               | GET    | public       | Bootstrapping installer fetched by `curl` |
 | `/uninstall.sh`             | GET    | public       | Removes the agent from a host (schedule, files, stored token) |
+| `/login` · `/setup`         | GET    | public       | Sign-in, and first-run admin creation while no account exists |
+| `/users`                    | GET    | admin        | Account management |
+| `/account`                  | GET    | session¹     | Change your own password |
 | `/agent.sh`                 | GET    | public       | Agent collector script, downloaded by the installer |
 | `/digi-fleet-watch.service` | GET    | public       | Systemd unit, downloaded by the installer |
 | `/digi-fleet-watch.timer`   | GET    | public       | Systemd timer, downloaded by the installer |
 
-¹ Requires a dashboard session **only when** `FLEETWATCH_DASHBOARD_PASSWORD` is
-set; open otherwise. Agent- and probe-facing routes are never session-gated.
+¹ Requires a signed-in session. `/users` additionally requires the **admin**
+role. Agent- and probe-facing routes are never session-gated — they use
+`AGENT_API_TOKEN`.
 
 ### Status thresholds
 
@@ -464,9 +529,10 @@ fails locally with a clear message instead of as an opaque remote 422.
 │   ├── app/                # Next.js App Router: pages, /api and script routes (/install.sh…)
 │   ├── components/         # dashboard UI (incl. Add Host dialog)
 │   ├── db/schema.ts        # Drizzle schema
-│   ├── instrumentation.ts  # start-up hook → runs migrations
-│   ├── middleware.ts       # optional dashboard password gate
-│   └── lib/                # db client, migrations, downtime logic, alerts, auth
+│   ├── instrumentation.ts  # start-up hook → migrations + first-admin seed
+│   ├── middleware.ts       # session + role gate
+│   └── lib/                # db client, migrations, downtime logic, alerts,
+│                           # rbac.ts, session.ts, password.ts, users.ts
 ├── scripts/
 │   └── rotate-agent-token.sh  # zero-downtime AGENT_API_TOKEN rotation
 ├── docker-compose.yml      # app + Postgres 16

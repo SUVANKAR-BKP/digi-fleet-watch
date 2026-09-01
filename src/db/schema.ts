@@ -19,6 +19,28 @@ export const detectedByEnum = pgEnum("detected_by", [
   "external_probe",
 ]);
 
+/** Dashboard access levels. See src/lib/rbac.ts for what each one may do. */
+export const userRoleEnum = pgEnum("user_role", ["admin", "operator", "viewer"]);
+
+export const users = pgTable(
+  "users",
+  {
+    id: serial("id").primaryKey(),
+    username: text("username").notNull().unique(),
+    /** scrypt digest: scrypt$N$r$p$saltHex$hashHex — never a raw password. */
+    passwordHash: text("password_hash").notNull(),
+    role: userRoleEnum("role").notNull().default("viewer"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("users_username_lower_idx").on(sql`lower(${t.username})`),
+  ],
+);
+
 export const hosts = pgTable(
   "hosts",
   {
@@ -182,6 +204,8 @@ export const downtimeEventsRelations = relations(downtimeEvents, ({ one }) => ({
   host: one(hosts, { fields: [downtimeEvents.hostId], references: [hosts.id] }),
 }));
 
+export type User = typeof users.$inferSelect;
+export type UserRole = User["role"];
 export type Host = typeof hosts.$inferSelect;
 export type Snapshot = typeof snapshots.$inferSelect;
 export type Package = typeof packages.$inferSelect;
