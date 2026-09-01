@@ -20,6 +20,7 @@ const JOB_LOCKS = {
   downtime: 8_100_001,
   retention: 8_100_002,
   vulnScan: 8_100_003,
+  checks: 8_100_004,
 } as const;
 
 const MINUTE = 60_000;
@@ -103,6 +104,18 @@ export function startScheduler(): void {
       run: runRetention,
     },
     {
+      name: "external-checks",
+      lockKey: JOB_LOCKS.checks,
+      // Ticks often; each check decides for itself whether its own interval
+      // has elapsed, so this is a scheduling heartbeat rather than a probe.
+      everyMs: 30_000,
+      initialDelayMs: 45_000,
+      run: async () => {
+        const { runDueChecks } = await import("./checks");
+        return runDueChecks();
+      },
+    },
+    {
       name: "vulnerability-scan",
       lockKey: JOB_LOCKS.vulnScan,
       everyMs: 6 * HOUR,
@@ -120,7 +133,7 @@ export function startScheduler(): void {
 
   console.log(
     `[scheduler] started ${jobs.length} background jobs ` +
-      "(downtime 2m, retention 6h, vulnerability scan 6h)",
+      "(downtime 2m, checks 30s, retention 6h, vulnerability scan 6h)",
   );
 }
 

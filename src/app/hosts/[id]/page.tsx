@@ -2,6 +2,7 @@ import { AlertTriangle } from "lucide-react";
 import { notFound } from "next/navigation";
 import { HostDetail } from "@/components/dashboard/host-detail";
 import { getCurrentUser } from "@/lib/auth-server";
+import { listChecks } from "@/lib/checks";
 import { getHostDetail } from "@/lib/data";
 import { resolveBaseUrl } from "@/lib/install-context";
 import { can } from "@/lib/rbac";
@@ -30,12 +31,16 @@ export default async function HostPage({
   if (!data) notFound();
 
   const user = await getCurrentUser();
+  // Demo mode has no database, so there are no checks to list.
+  const checks = data.demo ? [] : await listChecks(num);
 
   return (
     <HostDetail
       data={data}
       baseUrl={await resolveBaseUrl()}
       canDelete={can(user?.role, "hosts:delete")}
+      checks={checks}
+      canManageChecks={can(user?.role, "hosts:delete")}
     />
   );
 }

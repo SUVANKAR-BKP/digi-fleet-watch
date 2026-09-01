@@ -15,6 +15,7 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 /** How a downtime event was first detected. */
@@ -336,6 +337,122 @@ export const notificationChannels = pgTable(
   (t) => [index("notification_channels_enabled_idx").on(t.enabled)],
 );
 
+/**
+ * An external probe run from the server: TCP connect, HTTP request, or TLS
+ * certificate expiry. Current state is denormalised onto the row so the
+ * dashboard and transition detection never have to scan check_results.
+ */
+export const checks = pgTable(
+  "checks",
+  {
+    id: serial("id").primaryKey(),
+    hostId: integer("host_id").references(() => hosts.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: text("type").notNull(),
+    target: text("target").notNull(),
+    expectedStatus: integer("expected_status"),
+    /** none | contains | not_contains | regex | json_path */
+    assertionKind: text("assertion_kind").notNull().default("none"),
+    assertionValue: text("assertion_value"),
+    assertionPath: text("assertion_path"),
+    /** Above this response time the check is degraded, not down. NULL disables. */
+    degradedAboveMs: integer("degraded_above_ms"),
+    /** Probe attempts within a single run, including the first. */
+    attempts: integer("attempts").notNull().default(2),
+    /**
+     * Upstream check. While the upstream is down this check still records
+     * results but raises no alerts, so one dead router does not page forty
+     * times for the services behind it.
+     */
+    dependsOnCheckId: integer("depends_on_check_id").references(
+      (): AnyPgColumn => checks.id,
+      { onDelete: "set null" },
+    ),
+    /** Availability target, e.g. 99.9. NULL means no SLO is tracked. */
+    sloTarget: doublePrecision("slo_target"),
+    /**
+     * Route this check's alerts to one channel instead of all of them. NULL
+     * keeps the default fan-out.
+     */
+    alertChannelId: integer("alert_channel_id").references(
+      () => notificationChannels.id,
+      { onDelete: "set null" },
+    ),
+    timeoutMs: integer("timeout_ms").notNull().default(10_000),
+    intervalSeconds: integer("interval_seconds").notNull().default(300),
+    enabled: boolean("enabled").notNull().default(true),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    /** ok | degraded | down */
+    lastStatus: text("last_status"),
+    lastOk: boolean("last_ok"),
+    lastLatencyMs: integer("last_latency_ms"),
+    lastDetail: text("last_detail"),
+    /** maintenance | dependency | flapping, when the last run was silenced. */
+    suppressedBy: text("suppressed_by"),
+    certExpiresAt: timestamp("cert_expires_at", { withTimezone: true }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    alertedDown: boolean("alerted_down").notNull().default(false),
+    alertedDegraded: boolean("alerted_degraded").notNull().default(false),
+    certAlertedAt: timestamp("cert_alerted_at", { withTimezone: true }),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("checks_host_id_idx").on(t.hostId),
+    index("checks_due_idx").on(t.enabled, t.lastRunAt),
+    index("checks_depends_on_idx").on(t.dependsOnCheckId),
+  ],
+);
+
+/**
+ * A planned silence.
+ *
+ * Alerting during a deploy you are running yourself trains people to ignore
+ * alerts, which costs far more than the one real incident it might catch.
+ */
+export const maintenanceWindows = pgTable(
+  "maintenance_windows",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    /** fleet | host | check */
+    scope: text("scope").notNull(),
+    hostId: integer("host_id").references(() => hosts.id, { onDelete: "cascade" }),
+    checkId: integer("check_id").references(() => checks.id, { onDelete: "cascade" }),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("maintenance_windows_active_idx").on(t.endsAt, t.startsAt)],
+);
+
+export const checkResults = pgTable(
+  "check_results",
+  {
+    id: serial("id").primaryKey(),
+    checkId: integer("check_id")
+      .notNull()
+      .references(() => checks.id, { onDelete: "cascade" }),
+    ranAt: timestamp("ran_at", { withTimezone: true }).notNull().defaultNow(),
+    ok: boolean("ok").notNull(),
+    /**
+     * ok | degraded | down. Kept alongside `ok` rather than replacing it so
+     * history written before three-state status still reads correctly, and so
+     * availability arithmetic can stay a cheap boolean aggregate.
+     */
+    status: text("status"),
+    latencyMs: integer("latency_ms"),
+    detail: text("detail"),
+  },
+  (t) => [
+    index("check_results_check_time_idx").on(t.checkId, t.ranAt),
+    index("check_results_ran_at_idx").on(t.ranAt),
+  ],
+);
+
 export const heartbeats = pgTable(
   "heartbeats",
   {
@@ -405,6 +522,9 @@ export const downtimeEventsRelations = relations(downtimeEvents, ({ one }) => ({
   host: one(hosts, { fields: [downtimeEvents.hostId], references: [hosts.id] }),
 }));
 
+export type Check = typeof checks.$inferSelect;
+export type CheckResult = typeof checkResults.$inferSelect;
+export type MaintenanceWindowRow = typeof maintenanceWindows.$inferSelect;
 export type AlertSilence = typeof alertSilences.$inferSelect;
 export type NotificationChannel = typeof notificationChannels.$inferSelect;
 export type Vulnerability = typeof vulnerabilities.$inferSelect;

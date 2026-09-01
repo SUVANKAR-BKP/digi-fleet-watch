@@ -275,12 +275,15 @@ export async function dispatchAlert(alert: Alert): Promise<void> {
 
   // Legacy paths: the SMTP recipient and Slack webhook from settings/.env still
   // receive everything, so an existing deployment keeps working with no
-  // channels configured.
-  await sendAlertEmail({ subject: alert.title, text: renderText(alert) });
-  if (alert.severity !== "info") {
-    await postSlackMessage(
-      `${SEVERITY_EMOJI[alert.severity]} *${alert.title}*\n${renderText(alert)}`,
-    );
+  // channels configured. Skipped when the alert names a channel — routing that
+  // still broadcast to the global recipient would not be routing.
+  if (alert.channelId === undefined) {
+    await sendAlertEmail({ subject: alert.title, text: renderText(alert) });
+    if (alert.severity !== "info") {
+      await postSlackMessage(
+        `${SEVERITY_EMOJI[alert.severity]} *${alert.title}*\n${renderText(alert)}`,
+      );
+    }
   }
 
   let channels: (typeof notificationChannels.$inferSelect)[];
@@ -289,9 +292,26 @@ export async function dispatchAlert(alert: Alert): Promise<void> {
     channels = await getDb()
       .select()
       .from(notificationChannels)
-      .where(eq(notificationChannels.enabled, true));
+      .where(
+        alert.channelId === undefined
+          ? eq(notificationChannels.enabled, true)
+          : and(
+              eq(notificationChannels.enabled, true),
+              eq(notificationChannels.id, alert.channelId),
+            ),
+      );
   } catch (err) {
     console.warn("[alerts] could not load channels", (err as Error).message);
+    return;
+  }
+
+  // A routed alert whose channel was deleted or disabled would otherwise
+  // vanish silently, which is the worst possible failure mode for alerting.
+  if (alert.channelId !== undefined && channels.length === 0) {
+    console.warn(
+      `[alerts] channel ${alert.channelId} is missing or disabled — ` +
+        `"${alert.title}" was not delivered`,
+    );
     return;
   }
 

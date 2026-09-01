@@ -19,6 +19,7 @@ export interface RetentionResult {
   deletedSnapshots: number;
   deletedMetrics: number;
   deletedHeartbeats: number;
+  deletedCheckResults: number;
   deletedRollups: number;
 }
 
@@ -180,6 +181,15 @@ export async function runRetention(): Promise<RetentionResult> {
     )
   `);
 
+  const checkRows = await db.execute(sql`
+    delete from check_results
+    where id in (
+      select id from check_results
+      where ran_at < now() - make_interval(days => ${rawDays})
+      limit 20000
+    )
+  `);
+
   const heartbeats = await db.execute(sql`
     delete from heartbeats
     where id in (
@@ -194,17 +204,20 @@ export async function runRetention(): Promise<RetentionResult> {
     deletedSnapshots: snaps.rowCount ?? 0,
     deletedMetrics: metrics.rowCount ?? 0,
     deletedHeartbeats: heartbeats.rowCount ?? 0,
+    deletedCheckResults: checkRows.rowCount ?? 0,
     deletedRollups: 0,
   };
 
   if (
     result.deletedSnapshots > 0 ||
     result.deletedMetrics > 0 ||
-    result.deletedHeartbeats > 0
+    result.deletedHeartbeats > 0 ||
+    result.deletedCheckResults > 0
   ) {
     console.log(
       `[retention] pruned ${result.deletedSnapshots} snapshots, ` +
-        `${result.deletedMetrics} metrics, ${result.deletedHeartbeats} heartbeats ` +
+        `${result.deletedMetrics} metrics, ${result.deletedHeartbeats} heartbeats, ` +
+        `${result.deletedCheckResults} check results ` +
         `(keeping ${rawDays}d raw, ${rollupDays}d rollups)`,
     );
   }
@@ -231,7 +244,7 @@ export async function getStorageStats(): Promise<
       and c.relname in (
         'snapshots', 'packages', 'containers', 'host_metrics',
         'disk_usage', 'heartbeats', 'host_daily_rollup',
-        'host_vulnerabilities', 'vulnerabilities'
+        'host_vulnerabilities', 'vulnerabilities', 'check_results'
       )
     order by pg_total_relation_size(c.oid) desc
   `);

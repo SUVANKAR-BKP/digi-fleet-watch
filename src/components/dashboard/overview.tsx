@@ -3,7 +3,17 @@ import type { OverviewData } from "@/lib/types";
 import { EmptyState } from "./empty-state";
 import { HostCard } from "./host-card";
 
-export function Overview({ data }: { data: OverviewData }) {
+export function Overview({
+  data,
+  failingChecks = 0,
+  degradedChecks = 0,
+}: {
+  data: OverviewData;
+  /** Externally-probed services currently failing, across the fleet. */
+  failingChecks?: number;
+  /** Still answering, but slowly or with a failed body assertion. */
+  degradedChecks?: number;
+}) {
   const { hosts } = data;
   const online = hosts.filter((h) => h.status === "online").length;
   const stale = hosts.filter((h) => h.status === "stale").length;
@@ -33,6 +43,16 @@ export function Overview({ data }: { data: OverviewData }) {
           <Chip dotClass="bg-ok" label={`${online} online`} />
           <Chip dotClass="bg-warn" label={`${stale} stale`} />
           <Chip dotClass="bg-down" label={`${down} down`} />
+          {failingChecks > 0 && (
+            <span className="ml-1 rounded-full border border-down/50 bg-down/10 px-2 py-1 font-medium text-down">
+              {failingChecks} check{failingChecks === 1 ? "" : "s"} failing
+            </span>
+          )}
+          {degradedChecks > 0 && (
+            <span className="ml-1 rounded-full border border-warn/50 bg-warn/10 px-2 py-1 font-medium text-warn">
+              {degradedChecks} degraded
+            </span>
+          )}
           {diskPressure > 0 && (
             <span className="ml-1 rounded-full border border-warn/50 bg-warn/10 px-2 py-1 font-medium text-warn">
               {diskPressure} disk {diskPressure === 1 ? "warning" : "warnings"}

@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { fmtAgo, fmtPct } from "@/lib/format";
 import type { HostDetailData } from "@/lib/types";
+import type { CheckRow } from "@/lib/check-types";
+import { ChecksPanel } from "./checks-panel";
 import { ContainerTable } from "./container-table";
 import { DeleteHostButton } from "./delete-host-button";
 import { ResourcePanel } from "./resource-panel";
@@ -23,13 +25,19 @@ export function HostDetail({
   data,
   baseUrl,
   canDelete,
+  checks,
+  canManageChecks,
 }: {
   data: HostDetailData;
   /** Used to build the agent uninstall command shown when removing the host. */
   baseUrl: string;
   /** Viewers may read this page but not retire the host. */
   canDelete: boolean;
+  /** External probes associated with this host. */
+  checks: CheckRow[];
+  canManageChecks: boolean;
 }) {
+  const failingChecks = checks.filter((c) => c.enabled && c.lastOk === false).length;
   const { summary: h, os, docker, packages, containers, uptimeSeries, uptimePct30d } = data;
   const updates = packages.filter((p) => p.available).length;
   const secUpdates = packages.filter((p) => p.security).length;
@@ -153,6 +161,32 @@ export function HostDetail({
           )}
         </section>
       </div>
+
+      {/* External checks */}
+      {!data.demo && canManageChecks && (
+        <section className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Activity className="h-4 w-4 text-primary" />
+              Service checks
+              <span className="ml-1 font-mono text-xs font-normal text-muted-foreground tabular-nums">
+                {checks.length}
+              </span>
+            </h2>
+            {failingChecks > 0 && (
+              <span className="text-xs font-medium text-down">
+                {failingChecks} failing
+              </span>
+            )}
+          </div>
+          <ChecksPanel
+            checks={checks}
+            hosts={[{ id: h.id, hostname: h.hostname }]}
+            defaultHostId={h.id}
+            compact
+          />
+        </section>
+      )}
 
       {/* Vulnerabilities */}
       <section className="rounded-xl border border-border bg-card p-4">

@@ -63,6 +63,13 @@ export interface Alert {
   hostname?: string;
   /** Deep link back into the dashboard. */
   url?: string;
+  /**
+   * Route to exactly one channel instead of every eligible one.
+   *
+   * Set by checks that name a channel, so a noisy staging probe can report to
+   * a staging room without the on-call channel hearing about it.
+   */
+  channelId?: number;
 }
 
 export interface SafeChannel {
