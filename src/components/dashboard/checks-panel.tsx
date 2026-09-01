@@ -27,6 +27,7 @@ import {
   toggleCheck,
 } from "@/app/actions/checks";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -238,6 +239,7 @@ export function ChecksPanel({
   const [dependsOn, setDependsOn] = useState("none");
   const [sloTarget, setSloTarget] = useState("");
   const [alertChannel, setAlertChannel] = useState("none");
+  const [insecureTls, setInsecureTls] = useState(false);
   const [interval, setInterval] = useState("300");
   const [hostId, setHostId] = useState<string>(
     defaultHostId === null ? "none" : String(defaultHostId),
@@ -519,6 +521,25 @@ export function ChecksPanel({
                 />
               </div>
 
+              {type === "http" && (
+                <label className="flex items-start gap-2 sm:col-span-2 lg:col-span-4">
+                  <Checkbox
+                    checked={insecureTls}
+                    onCheckedChange={(v) => setInsecureTls(v === true)}
+                    className="mt-0.5"
+                  />
+                  <span className="text-xs leading-4">
+                    Ignore certificate errors
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      Needed for a self-signed certificate, a private CA, or
+                      HTTPS on a bare IP — where no certificate can match the
+                      address. The check then reports availability only, and
+                      cannot warn you about the certificate itself.
+                    </span>
+                  </span>
+                </label>
+              )}
+
               {channels.length > 0 && (
                 <div className="space-y-1.5">
                   <label className="text-xs text-muted-foreground">
@@ -566,6 +587,7 @@ export function ChecksPanel({
                     assertionPath,
                     degradedAboveMs,
                     attempts,
+                    insecureTls,
                     dependsOnCheckId: dependsOn === "none" ? "" : dependsOn,
                     sloTarget,
                     alertChannelId: alertChannel === "none" ? "" : alertChannel,
@@ -582,6 +604,7 @@ export function ChecksPanel({
                     setSloTarget("");
                     setDependsOn("none");
                     setAlertChannel("none");
+                    setInsecureTls(false);
                     setShowForm(false);
                   }
                   return res;

@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import dns from "node:dns";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { promisify } from "node:util";
@@ -15,6 +17,7 @@ import {
   clampAttempts,
   decideAlert,
   deriveIncidents,
+  describeFetchError,
   errorBudget,
   evaluateAssertion,
   findMaintenanceWindow,
@@ -227,13 +230,138 @@ async function readBodyCapped(res: Response): Promise<string> {
   return new TextDecoder().decode(joined.subarray(0, MAX_BODY_BYTES));
 }
 
+/**
+ * Issues a GET without verifying the certificate.
+ *
+ * Uses node:https rather than fetch because fetch has no per-request way to
+ * relax certificate checking without pulling in undici, and the global
+ * NODE_TLS_REJECT_UNAUTHORIZED switch would disable verification for the whole
+ * process — including the alert webhooks.
+ *
+ * Asks for `identity` encoding so the body arrives uncompressed: node:https
+ * does not decompress on its own, and a gzipped body would fail every
+ * assertion for reasons that had nothing to do with the service.
+ */
+function probeHttpInsecure(
+  url: string,
+  expectedStatus: number | null,
+  assertion: AssertionSpec,
+  timeoutMs: number,
+): Promise<ProbeOutcome> {
+  return new Promise((resolve) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      resolve(outcome("down", null, `invalid URL "${url}"`));
+      return;
+    }
+
+    const started = Date.now();
+    const transport = parsed.protocol === "http:" ? http : https;
+    let settled = false;
+
+    const finish = (result: ProbeOutcome) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const req = transport.request(
+      url,
+      {
+        method: "GET",
+        rejectUnauthorized: false,
+        timeout: timeoutMs,
+        headers: {
+          "User-Agent": "DigiFleetWatch/1.0 (+health-check)",
+          "Accept-Encoding": "identity",
+        },
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const chunks: Buffer[] = [];
+        let total = 0;
+
+        // Redirects are reported, never followed, matching the fetch path.
+        if (assertion.kind === "none") res.resume();
+        else {
+          res.on("data", (chunk: Buffer) => {
+            if (total >= MAX_BODY_BYTES) return;
+            chunks.push(chunk);
+            total += chunk.byteLength;
+            if (total >= MAX_BODY_BYTES) res.destroy();
+          });
+        }
+
+        const done = () => {
+          const latencyMs = Date.now() - started;
+          const body =
+            assertion.kind === "none"
+              ? ""
+              : Buffer.concat(chunks).subarray(0, MAX_BODY_BYTES).toString("utf8");
+          finish(evaluateHttpResponse(status, body, expectedStatus, assertion, latencyMs));
+        };
+
+        res.on("end", done);
+        // destroy() after the cap fires "close" without "end"; still a result.
+        res.on("close", done);
+        res.on("error", (err) => finish(outcome("down", null, describeFetchError(err))));
+      },
+    );
+
+    req.on("timeout", () => {
+      req.destroy();
+      finish(outcome("down", null, `timed out after ${timeoutMs}ms`));
+    });
+    req.on("error", (err) => finish(outcome("down", null, describeFetchError(err))));
+    req.end();
+  });
+}
+
+/** Shared verdict for both HTTP paths, so they cannot drift apart. */
+function evaluateHttpResponse(
+  status: number,
+  body: string,
+  expectedStatus: number | null,
+  assertion: AssertionSpec,
+  latencyMs: number,
+): ProbeOutcome {
+  if (!httpStatusOk(status, expectedStatus)) {
+    return outcome(
+      "down",
+      latencyMs,
+      `HTTP ${status}` +
+        (expectedStatus ? ` (expected ${expectedStatus})` : " (expected 2xx/3xx)"),
+    );
+  }
+
+  const asserted = evaluateAssertion(assertion, body);
+  if (!asserted.passed) {
+    // The status code lied. That is a real failure, and the detail has to say
+    // what the body actually contained or the alert is unactionable.
+    return outcome("down", latencyMs, `HTTP ${status} but ${asserted.detail}`);
+  }
+
+  return outcome(
+    "ok",
+    latencyMs,
+    `HTTP ${status} in ${latencyMs}ms` + (asserted.detail ? `, ${asserted.detail}` : ""),
+  );
+}
+
 /** Issues a GET, checks the status code and any body assertion. */
 async function probeHttp(
   url: string,
   expectedStatus: number | null,
   assertion: AssertionSpec,
   timeoutMs: number,
+  insecureTls: boolean,
 ): Promise<ProbeOutcome> {
+  if (insecureTls) {
+    return probeHttpInsecure(url, expectedStatus, assertion, timeoutMs);
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const started = Date.now();
@@ -251,34 +379,14 @@ async function probeHttp(
     const body = assertion.kind === "none" ? "" : await readBodyCapped(res);
     const latencyMs = Date.now() - started;
 
-    const statusOk = httpStatusOk(res.status, expectedStatus);
-    if (!statusOk) {
-      return outcome(
-        "down",
-        latencyMs,
-        `HTTP ${res.status}` +
-          (expectedStatus ? ` (expected ${expectedStatus})` : " (expected 2xx/3xx)"),
-      );
-    }
-
-    const asserted = evaluateAssertion(assertion, body);
-    if (!asserted.passed) {
-      // The status code lied. That is a real failure, and the detail has to say
-      // what the body actually contained or the alert is unactionable.
-      return outcome("down", latencyMs, `HTTP ${res.status} but ${asserted.detail}`);
-    }
-
-    return outcome(
-      "ok",
-      latencyMs,
-      `HTTP ${res.status} in ${latencyMs}ms` +
-        (asserted.detail ? `, ${asserted.detail}` : ""),
-    );
+    return evaluateHttpResponse(res.status, body, expectedStatus, assertion, latencyMs);
   } catch (err) {
+    // fetch throws a bare "TypeError: fetch failed" and hides the real reason
+    // in err.cause, so reporting err.message would tell the operator nothing.
     const message =
       (err as Error).name === "AbortError"
         ? `timed out after ${timeoutMs}ms`
-        : (err as Error).message;
+        : describeFetchError(err);
     return outcome("down", null, message);
   } finally {
     clearTimeout(timer);
@@ -424,6 +532,7 @@ export interface ProbeInput {
   assertionPath?: string | null;
   degradedAboveMs?: number | null;
   attempts?: number | null;
+  insecureTls?: boolean | null;
   timeoutMs: number;
 }
 
@@ -446,6 +555,7 @@ async function runOnce(check: ProbeInput): Promise<ProbeOutcome> {
         check.expectedStatus,
         assertionOf(check),
         check.timeoutMs,
+        check.insecureTls ?? false,
       );
     }
     if (type === "dns") {
@@ -896,6 +1006,7 @@ function toRow(
     assertionPath: c.assertionPath,
     degradedAboveMs: c.degradedAboveMs,
     attempts: c.attempts,
+    insecureTls: c.insecureTls,
     dependsOnCheckId: c.dependsOnCheckId,
     dependsOnName: stats?.depends_on_name ?? null,
     sloTarget: c.sloTarget,
@@ -1025,6 +1136,7 @@ export interface CreateCheckInput {
   assertionPath: string | null;
   degradedAboveMs: number | null;
   attempts: number;
+  insecureTls: boolean;
   dependsOnCheckId: number | null;
   sloTarget: number | null;
   alertChannelId: number | null;
@@ -1112,6 +1224,10 @@ export async function createCheck(
       assertionPath: assertsBody ? (input.assertionPath?.trim() ?? null) : null,
       degradedAboveMs: input.degradedAboveMs,
       attempts: clampAttempts(input.attempts),
+      // Only HTTPS verifies a certificate in the first place, so the flag is
+      // stored false for every other type rather than sitting there implying
+      // it does something.
+      insecureTls: input.type === "http" && input.insecureTls,
       dependsOnCheckId: input.dependsOnCheckId,
       sloTarget: input.sloTarget,
       alertChannelId: input.alertChannelId,

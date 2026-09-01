@@ -360,6 +360,14 @@ export const checks = pgTable(
     /** Probe attempts within a single run, including the first. */
     attempts: integer("attempts").notNull().default(2),
     /**
+     * Skip certificate verification for HTTPS probes.
+     *
+     * Needed to monitor anything behind a self-signed or private-CA
+     * certificate — an internal service, or HTTPS on a bare IP. Off by
+     * default: a check that ignores certificates cannot also warn about them.
+     */
+    insecureTls: boolean("insecure_tls").notNull().default(false),
+    /**
      * Upstream check. While the upstream is down this check still records
      * results but raises no alerts, so one dead router does not page forty
      * times for the services behind it.

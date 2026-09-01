@@ -220,6 +220,75 @@ export function validateCheckTarget(type: CheckType, target: string): string | n
 }
 
 // ---------------------------------------------------------------------------
+// Error messages
+// ---------------------------------------------------------------------------
+
+/**
+ * TLS failures worth naming, with the fix rather than the symptom.
+ *
+ * These are the errors where the raw code sends people hunting for a network
+ * problem that does not exist: the service is answering perfectly well, it is
+ * the certificate that cannot be verified.
+ */
+const TLS_ERROR_HINTS: Record<string, string> = {
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE:
+    "TLS certificate could not be verified (incomplete chain, or a private CA)",
+  SELF_SIGNED_CERT_IN_CHAIN: "TLS certificate is signed by an untrusted CA",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "TLS certificate is self-signed",
+  ERR_TLS_CERT_ALTNAME_INVALID:
+    "TLS certificate does not cover this hostname or IP",
+  CERT_HAS_EXPIRED: "TLS certificate has expired",
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+    "TLS certificate issuer is not trusted by this server",
+};
+
+/** Connection failures whose bare code means little to a reader. */
+const NETWORK_ERROR_HINTS: Record<string, string> = {
+  ECONNREFUSED: "connection refused",
+  ENOTFOUND: "hostname does not resolve",
+  EHOSTUNREACH: "host unreachable",
+  ENETUNREACH: "network unreachable",
+  ECONNRESET: "connection reset by peer",
+  EPROTO: "TLS handshake failed (is the port really HTTPS?)",
+  ERR_SSL_WRONG_VERSION_NUMBER:
+    "not a TLS port (try http:// instead of https://)",
+};
+
+/**
+ * Turns a thrown fetch error into something an operator can act on.
+ *
+ * `fetch` rejects with a bare `TypeError: fetch failed` and buries the real
+ * reason in `err.cause`, sometimes nested. Reporting the outer message is how
+ * a monitoring tool ends up saying nothing at all about an outage, so this
+ * walks the chain for the most specific code it can find.
+ */
+export function describeFetchError(err: unknown): string {
+  const chain: { code?: string; message?: string }[] = [];
+  let current: unknown = err;
+  for (let depth = 0; current && depth < 5; depth++) {
+    const e = current as { code?: string; message?: string; cause?: unknown };
+    chain.push({ code: e.code, message: e.message });
+    current = e.cause;
+  }
+
+  for (const link of chain) {
+    if (!link.code) continue;
+    const tls = TLS_ERROR_HINTS[link.code];
+    if (tls) return `${tls} — enable "ignore certificate errors" to probe anyway`;
+    const net = NETWORK_ERROR_HINTS[link.code];
+    if (net) return net;
+    // An unrecognised code is still far better than "fetch failed".
+    return `${link.code}: ${link.message ?? "request failed"}`;
+  }
+
+  // No code anywhere: fall back to the innermost message that says something.
+  const useful = chain
+    .map((l) => l.message)
+    .filter((m): m is string => !!m && m !== "fetch failed");
+  return useful[useful.length - 1] ?? "request failed";
+}
+
+// ---------------------------------------------------------------------------
 // Ping output
 // ---------------------------------------------------------------------------
 
@@ -881,6 +950,7 @@ export interface CheckRow {
   assertionPath: string | null;
   degradedAboveMs: number | null;
   attempts: number;
+  insecureTls: boolean;
   dependsOnCheckId: number | null;
   dependsOnName: string | null;
   sloTarget: number | null;

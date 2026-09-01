@@ -33,6 +33,19 @@
 - **Vulnerability scanning** — installed package versions matched against
   OSV.dev into real, CVSS-scored CVEs, with a fleet-wide "who is affected"
   view.
+- **Service checks** — TCP, HTTP(S), TLS-expiry, DNS and ICMP probes run *from
+  the server*, so they cover the one thing an agent can never report: the host
+  being unreachable from outside. HTTP checks assert on the response body, not
+  just the status code.
+- **Three-state health** — `passing` / `degraded` / `failing`, so an endpoint
+  that still answers but has slid from 80ms to 4s is visible before it becomes
+  an outage.
+- **Alert-fatigue controls** — per-check maintenance windows, upstream
+  dependencies (one dead router does not page forty times), flap detection, and
+  per-check routing to a single notification channel.
+- **SLOs and error budgets** — an availability target per check, with the
+  remaining budget expressed in minutes and a 30-day incident timeline derived
+  from result history.
 - **Uptime & downtime** — 30-day uptime chart and a host's full downtime
   history.
 - **Alerting** — Slack webhooks and/or SMTP emails for downtime, new package
@@ -354,6 +367,13 @@ up over successive runs instead of issuing one enormous statement. Retention
 runs every 6 hours, and **Run now** on the settings page reclaims space
 immediately and reports exactly what it removed.
 
+**Keep raw data for** also prunes `check_results`, the per-probe history behind
+service checks. Note that the checks table reports availability and error
+budgets over a **30-day** window: at the 14-day default those figures are
+computed over 14 days of history, not 30. Raise the setting if you want them to
+mean what they say — a check at a 5-minute interval writes 288 rows a day, so
+30 days of history is roughly 8,600 rows per check.
+
 ---
 
 ## Vulnerability scanning
@@ -387,6 +407,219 @@ run). Only Debian and Ubuntu hosts are scanned — the ecosystem mapping returns
 nothing for other distributions rather than querying the wrong one, because a
 confidently incorrect answer is worse than none. Nothing leaves your server
 beyond package names and versions.
+
+---
+
+## Service checks
+
+Everything else in this dashboard is **agent-push**: the host is alive because
+it phoned home. That says nothing about whether the *service* on it works. A
+box can sit at 2% CPU with a perfectly healthy agent while nginx returns 502 to
+every visitor.
+
+Checks run **from the server**, so they also cover the case the agent cannot
+report on at all — the host being unreachable from outside.
+
+Manage them at **/checks**, or on a host's own page for checks tied to it.
+Creating and editing checks needs the **operator** role: deciding what to probe
+is fleet work, not administrative configuration.
+
+The scheduler ticks every 30 seconds and each check decides for itself whether
+its own interval has elapsed. Probes run **sequentially** — a fleet of checks
+firing in parallel from one small VPS is a good way to make the box itself look
+unhealthy.
+
+### Check types
+
+| Type | Target format | What it proves |
+| ---- | ------------- | -------------- |
+| **TCP port** | `db.internal:5432` | the port accepts connections |
+| **HTTP(S)** | `https://example.com/health` | status code, body content and response time |
+| **TLS certificate** | `example.com:443` (port defaults to 443) | certificate validity and expiry |
+| **DNS record** | `A:example.com`, or bare `example.com` | the record resolves, and to what |
+| **ICMP ping** | `192.0.2.10` | reachability, packet loss and round-trip time |
+
+Notes on the less obvious ones:
+
+- **TLS** connects with `rejectUnauthorized: false` deliberately. The job is to
+  *report* on the certificate, including one already expired or self-signed —
+  refusing the handshake would turn the most important case ("your cert
+  expired") into an unhelpful connection error. Expiry warnings fire at 21 and
+  7 days, at most once a day, because expiry is not a failure until the day it
+  happens and you want to hear about it while there is still time to renew.
+- **DNS** supports `A`, `AAAA`, `CNAME`, `MX`, `TXT` and `NS`. Records are
+  joined into one string and run through the same assertion machinery, so "does
+  this still point at the old load balancer" is a `contains` assertion rather
+  than a new concept.
+- **ICMP ping** shells out to the system `ping` (Node cannot open raw ICMP
+  sockets unprivileged), parsing both the Linux and BSD/macOS output wordings.
+  Partial packet loss maps to **degraded** — losing 1 of 4 packets is real
+  signal about the path, but it is not an outage. The container needs a `ping`
+  binary; a missing one reports "ping binary not available" rather than a
+  confusing timeout.
+
+There is no separate "keyword in page" type — that is an HTTP check with a
+`contains` assertion.
+
+### Body assertions
+
+A status code is a weak claim. `200 {"status":"degraded","db":false}` passes
+every status-only check ever written, which is exactly the outage you most want
+to catch.
+
+| Assertion | Behaviour |
+| --------- | --------- |
+| `contains` / `not contains` | substring match on the body |
+| `regex` | an invalid pattern is a *failed assertion with an explanation*, never a crashed probe |
+| `JSON field equals` | dotted path — `status`, `data.db.healthy`, `services.0.up` (numeric segments index arrays) |
+
+Bodies are read through a **256 KB cap**, streamed rather than buffered, so one
+check pointed at a large download cannot decide how much RAM the monitoring box
+needs.
+
+### Three states, not two
+
+| State | Meaning |
+| ----- | ------- |
+| `passing` | probe succeeded and every assertion held |
+| `degraded` | still serving, but slower than the threshold, or partial packet loss, or a certificate nearing expiry |
+| `failing` | the probe failed, or an assertion did |
+
+**Degraded counts as up** for availability arithmetic and is not treated as an
+incident. Counting it as downtime would make every SLO unmeetable the first
+time a response took an extra 50ms.
+
+The **Degraded above (ms)** threshold only ever downgrades a pass — a check that
+already failed is not made healthier by being fast about it.
+
+### Retries
+
+**Attempts per run** (1–4, default 2) retries *inside a single run* with
+exponential backoff (250ms → 500ms → 1s, capped at 2s). Without it, telling a
+dropped packet from an outage means waiting a whole interval — a 10-minute
+detection floor at a 5-minute interval.
+
+Only failures are retried. A *degraded* result already succeeded; retrying
+until one attempt came back fast would hide exactly the slow slide the state
+exists to surface.
+
+### Keeping the alert channel worth reading
+
+A channel that cries wolf gets muted, and a muted channel is worse than no
+channel at all. Four mechanisms, in the order they are applied:
+
+1. **Two consecutive failures** before anything alerts. One dropped packet is
+   not an outage.
+2. **Maintenance windows** — scoped to the whole fleet, one host, or one check.
+   Failures are still recorded, they just do not alert.
+3. **Dependencies** — a check can name an upstream. While that upstream is
+   down, this check records results but raises no alerts, so one dead router
+   does not page for every service behind it.
+4. **Flap detection** — a check alternating pass/fail is reporting instability,
+   not an outage. Five transitions within ten runs suppresses it.
+
+Suppressed checks show a grey badge (`in maintenance`, `upstream down`,
+`flapping`) next to a red status, so silence is always explainable rather than
+mysterious.
+
+**Recovery alerts are exempt from all suppression.** Telling someone an alert
+they already received is over is never noise, and swallowing it would leave the
+latch set and the row permanently red.
+
+> These per-check maintenance windows are **separate** from the fleet-wide
+> alert silences under *Settings → Maintenance windows*. Silences mute every
+> alert for a host (downtime, disk, packages); check windows mute check alerts
+> and can be narrowed to a single check. Both apply — a silence covering the
+> host suppresses its check alerts too.
+
+**Per-check routing** sends one check's alerts to a single notification channel
+instead of the usual fan-out, so a noisy staging probe reports to a staging
+room. A routed alert whose channel was later deleted or disabled logs loudly
+rather than vanishing silently.
+
+### SLOs, error budgets and incidents
+
+Set an **SLO target** (50–99.999; `100` leaves no budget and would breach on
+the first blip forever) and the table shows the **error budget** — the downtime
+still affordable this month, in minutes, because "we have 4 minutes left" lands
+in a way "0.0093% remaining" does not.
+
+Alongside it: p50/p95/p99 latency over 24h, and availability over 24h / 7d /
+30d. Percentiles are **nearest-rank**, so every number shown is a latency that
+actually happened. All of it is computed in Postgres in a single query — a
+30-day window at a one-minute interval is ~43,000 rows per check, and the
+dashboard needs six numbers from it.
+
+Expanding a row shows a **30-day incident timeline**: start, duration, and the
+first failure detail (what broke, not what it looked like after an hour of
+being broken). Incidents are *derived from results on read*, not stored in
+their own table — the results are already the source of truth, and a second
+table would drift the first time a probe wrote one row and failed before
+writing the other.
+
+> **Retention caveat.** Error budgets and 30-day uptime read
+> `check_results`, which the retention job prunes at the **Keep raw data for**
+> setting — **14 days by default**. At that default a "30-day" budget is really
+> computed over the last 14 days of history. Raise the setting to 30+ days at
+> /settings if you want the figure to mean what it says.
+
+### Certificate errors on HTTP checks
+
+Node's `fetch` refuses any certificate it cannot verify, which makes two common
+internal cases unmonitorable: a service behind a private CA, and HTTPS served
+on a bare IP, where no certificate can ever match the address.
+
+**Ignore certificate errors** (HTTP checks only) probes without verification.
+The trade-off is real and worth stating: such a check reports availability only
+and can no longer warn you about the certificate. To keep expiry warnings, add
+a separate TLS check against the same host.
+
+It is an explicit per-check opt-in rather than a default, and it is implemented
+with `node:https` rather than a global switch — `NODE_TLS_REJECT_UNAUTHORIZED`
+would disable verification for the entire process, including outbound alert
+webhooks.
+
+Failures decode the real reason rather than reporting `fetch failed`, which is
+all `fetch` puts in the outer error:
+
+```
+TLS certificate could not be verified (incomplete chain, or a private CA)
+  — enable "ignore certificate errors" to probe anyway
+```
+
+### Every field on the form
+
+| Field | What it does |
+| ----- | ------------ |
+| **Name** | Label, and the alert subject (`Check failing: <name>`). 1–64 chars. |
+| **Type** | Which probe runs; changes what Target means. |
+| **Target** | What to probe — format per type, see the table above. |
+| **Expected status** | HTTP only. Blank accepts any 2xx/3xx (a redirect to a login page still proves the server is serving); set `200` to assert "200, not a redirect". |
+| **Every** | Interval, 30s–24h. Below 30s a check costs more than it tells you and hammers the target. |
+| **Host** | Optional link to a fleet host. Ties the check to that host's page and its silences. Checks with no host are still valid — an external dependency, a customer URL. |
+| **Body assertion** | See *Body assertions* above. HTTP and DNS only. |
+| **JSON path** | Only for *JSON field equals*. Dotted path into the body. |
+| **Expected value** | The substring, regex source, or JSON value to compare. Booleans and numbers compare as written (`true`, `3`). |
+| **Degraded above (ms)** | Response time past which the check is degraded rather than passing. Blank disables. |
+| **Attempts per run** | Retries within one run, 1–4. |
+| **Ignore certificate errors** | HTTP only. See above. |
+| **Depends on** | Upstream check; suppresses this one's alerts while the upstream is down. |
+| **SLO target (%)** | Availability target driving the error budget. |
+| **Alert channel** | Route to one channel instead of all eligible ones. |
+
+### Table columns
+
+| Column | Meaning |
+| ------ | ------- |
+| **Status** | `passing` / `degraded` / `failing ×N`, N being consecutive failures, plus any suppression badge. |
+| **Latency last / p95** | Most recent response time, and the 95th percentile over 24h. |
+| **Uptime 24h / 7d / 30d** | Share of runs not `down`. |
+| **Error budget** | Target and minutes of downtime still affordable; the bar turns red past 100%. |
+| **Last run** | When it last *executed*, not when it last succeeded. |
+
+**Run now** (▷) probes immediately and records the result, but deliberately
+**never alerts** — you are already looking at the outcome, and a "run now" that
+pages the whole team is a button nobody presses twice.
 
 ---
 
@@ -527,9 +760,10 @@ role. Agent- and probe-facing routes are never session-gated — they use
 
 Downtime detection runs on a **background scheduler** (every 2 minutes), so an
 outage over a quiet weekend is noticed without anyone having the dashboard
-open. Retention and vulnerability scans run on the same scheduler every 6
-hours. Each job takes a Postgres advisory lock first, so running multiple app
-replicas against one database does not double-alert or double-prune.
+open. Service checks tick every 30 seconds; retention and vulnerability scans
+run on the same scheduler every 6 hours. Each job takes a Postgres advisory
+lock first, so running multiple app replicas against one database does not
+double-alert or double-prune.
 
 The watchdog endpoint below still exists for belt-and-braces external cron.
 
@@ -565,6 +799,11 @@ than waiting it out.
 
 Creating a silence needs the **operator** role, not admin: muting alerts before
 you patch a box is day-to-day work, not a configuration change.
+
+> Not to be confused with the **per-check maintenance windows** on /checks
+> (see *Service checks*). A silence here mutes every alert for a host —
+> downtime, disk, packages, and its checks. A check window mutes only check
+> alerts and can be narrowed to a single check.
 
 ### Notification channels
 
@@ -687,6 +926,11 @@ fails locally with a clear message instead of as an opaque remote 422.
 | Host page shows an error panel instead of data | The database schema is behind the app. | `docker compose logs app \| grep migrate`, then restart the app to re-run migrations. |
 | Dashboard shows demo data | Postgres unreachable. | `docker compose ps`; the app re-probes every 10s and recovers on its own once the database is up. |
 | Host stuck `stale` / `down` | The timer isn't firing, or the agent errors before POSTing. | `systemctl list-timers \| grep fleet` and `cat /var/log/digi-fleet-watch.log`. |
+| HTTP check says `TLS certificate could not be verified` | The service is answering, but its certificate is self-signed, has an incomplete chain, or is served on a bare IP that no certificate can match. | Recreate the check with **Ignore certificate errors** ticked. Add a separate TLS check if you still want expiry warnings. |
+| HTTP check says `not a TLS port (try http://)` | `https://` against a plaintext port. | Fix the scheme in the target. |
+| Ping check says `ping binary not available` | The app image has no `ping`. | Install `iputils-ping` in the image, or use a TCP check instead. |
+| A check is red but never alerted | It is suppressed — look for the grey badge next to the status (`in maintenance`, `upstream down`, `flapping`), or a fleet-wide silence. | Expected behaviour; see *Service checks*. |
+| 30-day uptime looks wrong | `check_results` is pruned at **Keep raw data for** (14 days by default), which is shorter than the 30-day window. | Raise the retention setting at /settings. |
 
 ---
 
@@ -709,7 +953,11 @@ fails locally with a clear message instead of as an opaque remote 422.
 │   ├── 0005_metrics.sql    # host_metrics + disk_usage
 │   ├── 0006_retention.sql  # host_daily_rollup
 │   ├── 0007_vulnerabilities.sql  # OSV advisories + per-host exposure
-│   └── 0008_alerting.sql   # maintenance windows + notification channels
+│   ├── 0008_alerting.sql   # alert silences + notification channels
+│   ├── 0009_checks.sql     # external service checks + result history
+│   ├── 0010_checks_advanced.sql  # assertions, degraded state, dependencies,
+│   │                             # check maintenance windows, SLO targets
+│   └── 0011_check_insecure_tls.sql  # opt out of cert verification per check
 ├── src/
 │   ├── app/                # Next.js App Router: pages, /api and script routes (/install.sh…)
 │   ├── components/         # dashboard UI (incl. Add Host dialog)
@@ -720,7 +968,9 @@ fails locally with a clear message instead of as an opaque remote 422.
 │                           # rbac.ts, session.ts, password.ts, users.ts,
 │                           # settings.ts, secrets.ts, scheduler.ts,
 │                           # retention.ts, osv.ts, cvss.ts, vulnerabilities.ts,
-│                           # alerts.ts (server), alert-channels.ts (shared)
+│                           # alerts.ts (server), alert-channels.ts (shared),
+│                           # checks.ts (probe runner + queries, Node-only),
+│                           # check-types.ts (pure check logic, unit-tested)
 ├── scripts/
 │   └── rotate-agent-token.sh  # zero-downtime AGENT_API_TOKEN rotation
 ├── docker-compose.yml      # app + Postgres 16

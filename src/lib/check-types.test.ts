@@ -12,6 +12,7 @@ import {
   countTransitions,
   decideAlert,
   deriveIncidents,
+  describeFetchError,
   errorBudget,
   evaluateAssertion,
   findMaintenanceWindow,
@@ -238,6 +239,80 @@ describe("validateCheckTarget for the new types", () => {
   it("rejects malformed ones with a usable message", () => {
     expect(validateCheckTarget("dns", "SRV:example.com")).toMatch(/RECORD:hostname/);
     expect(validateCheckTarget("ping", "not a host")).toMatch(/hostname or IP/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error messages
+// ---------------------------------------------------------------------------
+
+describe("describeFetchError", () => {
+  /** Shaped like what fetch actually throws: a bare wrapper around a cause. */
+  const fetchFailure = (code: string, message: string) =>
+    Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error(message), { code }),
+    });
+
+  it("digs the real reason out of err.cause", () => {
+    // The outer message is always "fetch failed", which says nothing at all.
+    const detail = describeFetchError(
+      fetchFailure("ECONNREFUSED", "connect ECONNREFUSED 10.0.0.1:443"),
+    );
+    expect(detail).toBe("connection refused");
+    expect(detail).not.toMatch(/fetch failed/);
+  });
+
+  it("explains certificate failures and names the way out", () => {
+    const detail = describeFetchError(
+      fetchFailure(
+        "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "unable to verify the first certificate",
+      ),
+    );
+    expect(detail).toMatch(/certificate could not be verified/);
+    // The service is usually fine; without this hint people hunt for a network
+    // fault that does not exist.
+    expect(detail).toMatch(/ignore certificate errors/);
+  });
+
+  it("covers the other certificate cases an internal fleet hits", () => {
+    for (const code of [
+      "SELF_SIGNED_CERT_IN_CHAIN",
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+      "CERT_HAS_EXPIRED",
+    ]) {
+      expect(describeFetchError(fetchFailure(code, "x"))).toMatch(
+        /ignore certificate errors/,
+      );
+    }
+  });
+
+  it("walks a nested cause chain", () => {
+    const inner = Object.assign(new Error("getaddrinfo ENOTFOUND nope.invalid"), {
+      code: "ENOTFOUND",
+    });
+    const middle = Object.assign(new Error("fetch failed"), { cause: inner });
+    const outer = Object.assign(new TypeError("fetch failed"), { cause: middle });
+    expect(describeFetchError(outer)).toBe("hostname does not resolve");
+  });
+
+  it("passes through an unrecognised code rather than swallowing it", () => {
+    expect(describeFetchError(fetchFailure("EWEIRD", "something odd"))).toBe(
+      "EWEIRD: something odd",
+    );
+  });
+
+  it("falls back to the innermost meaningful message with no code", () => {
+    const outer = Object.assign(new TypeError("fetch failed"), {
+      cause: new Error("socket hang up"),
+    });
+    expect(describeFetchError(outer)).toBe("socket hang up");
+  });
+
+  it("never returns an empty string", () => {
+    expect(describeFetchError(new TypeError("fetch failed"))).toBe("request failed");
+    expect(describeFetchError(undefined)).toBe("request failed");
   });
 });
 

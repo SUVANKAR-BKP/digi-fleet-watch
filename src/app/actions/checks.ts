@@ -50,6 +50,7 @@ export async function addCheck(input: {
   assertionPath: string;
   degradedAboveMs: string;
   attempts: string;
+  insecureTls: boolean;
   dependsOnCheckId: string;
   sloTarget: string;
   alertChannelId: string;
@@ -69,6 +70,7 @@ export async function addCheck(input: {
     assertionPath: input.assertionPath.trim() || null,
     degradedAboveMs: optionalNumber(input.degradedAboveMs),
     attempts: Number(input.attempts) || 2,
+    insecureTls: input.insecureTls,
     dependsOnCheckId: optionalNumber(input.dependsOnCheckId),
     sloTarget: optionalNumber(input.sloTarget),
     alertChannelId: optionalNumber(input.alertChannelId),
