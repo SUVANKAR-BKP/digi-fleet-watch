@@ -1,0 +1,26 @@
+# Normalise line endings.
+#
+# Everything under agent/ and scripts/ is executed by bash or read by systemd
+# on Linux. A CRLF checkout there is not cosmetic: bash reports
+# `$'\r': command not found` and `syntax error near unexpected token $'{\r'`,
+# and the script dies. Editing one of these files from Windows without this
+# file is enough to break it, so pin the endings rather than relying on
+# everyone's core.autocrlf.
+
+* text=auto
+
+*.sh              text eol=lf
+*.service         text eol=lf
+*.timer           text eol=lf
+*.sql             text eol=lf
+Dockerfile*       text eol=lf
+*.yml             text eol=lf
+*.yaml            text eol=lf
+.env.example      text eol=lf
+
+# Binary — never touch these.
+*.png             binary
+*.ico             binary
+*.jpg             binary
+*.woff            binary
+*.woff2           binary
